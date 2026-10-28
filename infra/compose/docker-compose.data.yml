@@ -1,0 +1,29 @@
+# Layer: data. A one-shot job, not a long-running service: run it with
+#   sh infra/scripts/compose.sh run --rm data-loader
+# Phase 7 adds OpenMetadata, Presidio and the Great Expectations checkpoint.
+networks:
+  default:
+    name: warden-net
+    external: true
+
+volumes:
+  hf-cache:
+
+services:
+  data-loader:
+    build: ./warden-data-loader
+    profiles: ["jobs"]
+    environment:
+      POSTGRES_HOST: postgres
+      PGPASS_WARDEN_LEDGER: ${PGPASS_WARDEN_LEDGER:?set in .env}
+      PGPASS_WARDEN_BACKEND: ${PGPASS_WARDEN_BACKEND:?set in .env}
+      BACKEND_URL: http://warden-backend:8000
+      SROIE_TRAIN_LIMIT: ${SROIE_TRAIN_LIMIT:-200}
+      SROIE_TEST_LIMIT: ${SROIE_TEST_LIMIT:-60}
+      CORD_TRAIN_LIMIT: ${CORD_TRAIN_LIMIT:-100}
+      CORD_TEST_LIMIT: ${CORD_TEST_LIMIT:-40}
+      USASPENDING_AGENCY: ${USASPENDING_AGENCY:-Department of Health and Human Services}
+      USASPENDING_FISCAL_YEAR: ${USASPENDING_FISCAL_YEAR:-2025}
+      USASPENDING_PAGES: ${USASPENDING_PAGES:-3}
+    volumes:
+      - hf-cache:/home/app/.cache/huggingface
