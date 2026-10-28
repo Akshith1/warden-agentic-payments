@@ -1,0 +1,46 @@
+# Layer: the application. The backend expects postgres (base) and litellm (model) on warden-net.
+networks:
+  default:
+    name: warden-net
+    external: true
+
+services:
+  warden-ledger:
+    build: ./warden-ledger
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      PGPASS_WARDEN_LEDGER: ${PGPASS_WARDEN_LEDGER:?set in .env}
+      LEDGER_WRITE_KEY: ${LEDGER_WRITE_KEY:?set in .env}
+      VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
+      OPENING_CASH: ${OPENING_CASH:-250000.00}
+    ports:
+      - "8101:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  warden-backend:
+    build: ./warden-backend
+    restart: unless-stopped
+    depends_on:
+      warden-ledger:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      PGPASS_WARDEN_BACKEND: ${PGPASS_WARDEN_BACKEND:?set in .env}
+      LITELLM_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:?set in .env}
+      LEDGER_URL: http://warden-ledger:8000
+      LEDGER_WRITE_KEY: ${LEDGER_WRITE_KEY:?set in .env}
+      VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
+      ROUTINE_AMOUNT_THRESHOLD: ${ROUTINE_AMOUNT_THRESHOLD:-5000}
+      CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.75}
+      SETTLEMENT_HOLD_SECONDS: ${SETTLEMENT_HOLD_SECONDS:-20}
+    ports:
+      - "8100:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
