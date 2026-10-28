@@ -1,0 +1,25 @@
+# Agent code only ever names these three routes; the provider model behind
+# each one can change here without touching any agent.
+# Check current model IDs before running:
+#   OpenAI: https://developers.openai.com   Groq: https://console.groq.com/docs/models
+model_list:
+  - model_name: warden-reasoning
+    litellm_params:
+      model: openai/gpt-5.6-sol
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: warden-routine
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
+      api_key: os.environ/GROQ_API_KEY
+  - model_name: warden-guardrail
+    litellm_params:
+      model: groq/openai/gpt-oss-safeguard-20b
+      api_key: os.environ/GROQ_API_KEY
+
+litellm_settings:
+  num_retries: 2
+  request_timeout: 120
+  drop_params: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
