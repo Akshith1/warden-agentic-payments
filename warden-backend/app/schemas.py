@@ -15,7 +15,7 @@ class InvoiceExtraction(BaseModel):
     vendor_name: str | None = Field(description="Seller or merchant name exactly as printed, or null")
     invoice_number: str | None = Field(description="Invoice or receipt number, or null")
     invoice_date: str | None = Field(description="Date as printed on the document, or null")
-    currency: str = Field(default="USD", description="ISO 4217 code")
+    currency: str | None = Field(default=None, description="ISO 4217 code if the document shows one, else null")
     total_amount: float | None = Field(description="Final amount payable as a plain number, or null")
     line_items: list[LineItem] = Field(default_factory=list)
     remit_to_account: str | None = Field(description="Bank account or remittance details for payment, or null")
