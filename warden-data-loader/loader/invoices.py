@@ -5,7 +5,7 @@ Images are not stored in phase 1 (the sandboxed OCR path arrives in phase 5)."""
 import json
 import os
 
-from datasets import load_dataset
+from datasets import Image, load_dataset
 from psycopg.types.json import Jsonb
 
 from . import db
@@ -18,8 +18,18 @@ LIMITS = {
 }
 
 
+def _text_only(name: str, split: str):
+    # Phase 1 reads the OCR text and labels only. decode=False stops the library from
+    # opening every image (remove_columns alone still decodes first). Images return
+    # with the sandboxed OCR path in phase 5.
+    ds = load_dataset(name, split=split, streaming=True)
+    if ds.column_names and "image" in ds.column_names:
+        ds = ds.cast_column("image", Image(decode=False))
+    return ds
+
+
 def sroie_rows(split: str, limit: int):
-    for i, rec in enumerate(load_dataset("jsdnrs/ICDAR2019-SROIE", split=split, streaming=True)):
+    for i, rec in enumerate(_text_only("jsdnrs/ICDAR2019-SROIE", split)):
         if i >= limit:
             return
         words = rec.get("words") or []
@@ -29,7 +39,7 @@ def sroie_rows(split: str, limit: int):
 
 
 def cord_rows(split: str, limit: int):
-    for i, rec in enumerate(load_dataset("naver-clova-ix/cord-v2", split=split, streaming=True)):
+    for i, rec in enumerate(_text_only("naver-clova-ix/cord-v2", split)):
         if i >= limit:
             return
         gt = json.loads(rec["ground_truth"])
