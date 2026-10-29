@@ -27,6 +27,7 @@ require_read = _require(LOOKUP_KEY)
 
 @asynccontextmanager
 async def lifespan(_app):
+    db.wait_for_db()
     with db.connect() as conn:
         db.init_schema(conn)
         if OPENING_CASH > 0:
