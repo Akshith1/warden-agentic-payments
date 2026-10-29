@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -45,6 +46,7 @@ async def lifespan(_app):
     # The checkpointer needs autocommit + dict rows; a pool keeps worker threads off one shared connection.
     rt.pool = ConnectionPool(config.backend_dsn(), max_size=10, open=True,
                              kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
+    rt.pool.wait(timeout=float(os.environ.get("DB_WAIT_SECONDS", "60")))  # Postgres may still be starting
     checkpointer = PostgresSaver(rt.pool)
     checkpointer.setup()
     with rt.pool.connection() as conn:
