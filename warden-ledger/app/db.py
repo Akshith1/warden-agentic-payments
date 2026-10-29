@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from contextlib import contextmanager
 
 import psycopg
@@ -65,6 +66,19 @@ def dsn() -> str:
 def connect():
     with psycopg.connect(dsn(), row_factory=dict_row) as conn:
         yield conn
+
+
+def wait_for_db(timeout: float = float(os.environ.get("DB_WAIT_SECONDS", "60"))) -> None:
+    # Postgres may still be initializing when this container starts; retry instead of crash-looping.
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            psycopg.connect(dsn(), connect_timeout=3).close()
+            return
+        except psycopg.OperationalError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(2)
 
 
 def init_schema(conn) -> None:
