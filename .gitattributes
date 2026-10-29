@@ -1,0 +1,9 @@
+# Shell scripts and container config run inside Linux containers: keep LF on every OS.
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.py   text eol=lf
+*.txt  text eol=lf
+Dockerfile text eol=lf
+.env.example text eol=lf
+*.ps1  text eol=crlf
