@@ -47,6 +47,8 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 
 You need Docker Desktop (about 4 GB of RAM is enough for phase 1), an OpenAI API key and a Groq API key.
 
+On Windows PowerShell, use `.\infra\scripts\compose.ps1` wherever this README says `sh infra/scripts/compose.sh`; the arguments are the same.
+
 ```sh
 cp .env.example .env            # then set OPENAI_API_KEY and GROQ_API_KEY
 docker network create warden-net
