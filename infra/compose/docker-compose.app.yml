@@ -27,6 +27,11 @@ services:
     depends_on:
       warden-ledger:
         condition: service_healthy
+      # Start after MLflow so the promoted prompt is found; not required, because the
+      # backend falls back to its bundled prompt when MLflow is absent.
+      mlflow:
+        condition: service_healthy
+        required: false
     environment:
       POSTGRES_HOST: postgres
       PGPASS_WARDEN_BACKEND: ${PGPASS_WARDEN_BACKEND:?set in .env}
@@ -38,6 +43,9 @@ services:
       ROUTINE_AMOUNT_THRESHOLD: ${ROUTINE_AMOUNT_THRESHOLD:-5000}
       CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.75}
       SETTLEMENT_HOLD_SECONDS: ${SETTLEMENT_HOLD_SECONDS:-20}
+      LEDGER_CURRENCY: ${LEDGER_CURRENCY:-MYR}
+      MIN_PRIOR_PAYMENTS: ${MIN_PRIOR_PAYMENTS:-2}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     ports:
       - "8100:8000"
     deploy:
