@@ -8,5 +8,6 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-eval.txt
 COPY app ./app
 USER app
 WORKDIR /home/app
-ENV PYTHONPATH=/srv DEEPEVAL_TELEMETRY_OPT_OUT=YES MLFLOW_DISABLE_AGENT_HINT=1
+# No git in the image; tell MLflow's git lookup to stay quiet instead of printing a page of warnings.
+ENV PYTHONPATH=/srv DEEPEVAL_TELEMETRY_OPT_OUT=YES MLFLOW_DISABLE_AGENT_HINT=1 GIT_PYTHON_REFRESH=quiet
 CMD ["python", "-m", "app.evalgate"]
