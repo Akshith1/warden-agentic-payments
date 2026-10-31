@@ -79,6 +79,8 @@ def test_known_vendor_routine_amount_settles(checkpointer, ledger, ledger_url):
     assert dict(fake.calls)["critic"] != dict(fake.calls)["approval"]  # critic on the other provider's route
     assert ledger.lookup_vendor("ACME SUPPLY")["payment_count"] == 4  # history grows only after settlement
     assert [e["step"] for e in s["audit_trail"]][-3:] == ["dry_run", "settlement_hold", "commit"]
+    extraction = s["audit_trail"][0]
+    assert extraction["prompt_source"] == "bundled" and extraction["currency_assumed"] is True
 
 
 def test_first_seen_vendor_waits_for_human_then_settles(checkpointer, ledger, ledger_url):
@@ -111,14 +113,14 @@ def test_amount_over_threshold_escalates_and_uses_reasoning_route(checkpointer, 
 
 
 def test_low_confidence_escalates(checkpointer, ledger):
-    seed_history(ledger, "Acme Supply", [100])
+    seed_history(ledger, "Acme Supply", [100, 105])
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(), confidence=0.6))
     s = state(graph, cfg)
     assert s["status"] == "pending_human" and any("confidence 0.60" in r for r in s["escalation_reasons"])
 
 
 def test_critic_disagreement_escalates(checkpointer, ledger):
-    seed_history(ledger, "Acme Supply", [100])
+    seed_history(ledger, "Acme Supply", [100, 105])
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(), critic_agrees=False))
     s = state(graph, cfg)
     assert s["status"] == "pending_human" and s["escalation_reasons"] == ["critic disagreed: mismatch"]
@@ -133,13 +135,13 @@ def test_changed_remit_account_escalates(checkpointer, ledger):
 
 
 def test_agent_reject_ends_run(checkpointer, ledger, ledger_url):
-    seed_history(ledger, "Acme Supply", [100])
+    seed_history(ledger, "Acme Supply", [100, 105])
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(), decision="reject"))
     assert state(graph, cfg)["status"] == "rejected" and cash(ledger_url) == 10000
 
 
 def test_duplicate_invoice_blocked_by_ledger(checkpointer, ledger, ledger_url):
-    seed_history(ledger, "Acme Supply", [100])
+    seed_history(ledger, "Acme Supply", [100, 105])
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(number="INV-7", total=100.0)))
     assert state(graph, cfg)["status"] == "settled"
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(number="inv 7", total=100.0)))
@@ -169,3 +171,82 @@ def test_line_items_that_do_not_add_up(checkpointer, ledger):
     items = [{"description": "a", "amount": 50.0}, {"description": "b", "amount": 40.0}]
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(total=120.0, items=items)))
     assert "line items sum to 90.00" in state(graph, cfg)["status_reason"]
+
+
+# --- Phase 2: rules made explicit after the phase 1 live run --------------------------------
+
+
+def test_one_prior_payment_is_not_enough_history(checkpointer, ledger):
+    seed_history(ledger, "Acme Supply", [100])
+    fake = FakeLLM(invoice())
+    graph, cfg = run(checkpointer, ledger, fake)
+    s = state(graph, cfg)
+    assert s["status"] == "pending_human"
+    assert s["escalation_reasons"] == ["limited history: 1 prior payment(s), auto-approval needs 2"]
+    assert [a for a, _ in fake.calls] == ["extraction", "risk-scoring"]  # code decided; approval model not asked
+
+
+def test_missing_currency_is_ledger_currency_and_auto_pays(checkpointer, ledger):
+    seed_history(ledger, "Acme Supply", [100, 105])
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice() | {"currency": None}))
+    s = state(graph, cfg)
+    assert s["status"] == "settled"
+    assert s["extraction"]["currency"] == config.LEDGER_CURRENCY and s["extraction"]["currency_assumed"]
+
+
+def test_printed_symbol_maps_to_iso_code(checkpointer, ledger):
+    seed_history(ledger, "Acme Supply", [100, 105])
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice() | {"currency": "RM"}))
+    s = state(graph, cfg)
+    assert s["extraction"]["currency"] == "MYR" and s["extraction"]["currency_assumed"] is False
+    assert s["status"] == "settled"
+
+
+def test_foreign_currency_escalates(checkpointer, ledger):
+    seed_history(ledger, "Acme Supply", [100, 105])
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice() | {"currency": "USD"}))
+    s = state(graph, cfg)
+    assert s["status"] == "pending_human"
+    assert s["escalation_reasons"] == [f"currency USD differs from ledger currency {config.LEDGER_CURRENCY}"]
+
+
+def test_status_is_settling_during_the_hold(checkpointer, ledger):
+    seed_history(ledger, "Acme Supply", [100, 105])
+    statuses, during_hold = [], []
+    graph = build_graph(Deps(llm=FakeLLM(invoice()), ledger=ledger,
+                             sleep=lambda _s: during_hold.append(statuses[-1])), checkpointer)
+    cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    # The API's _drive() streams values like this and writes each status to the runs table.
+    for values in graph.stream({"run_id": cfg["configurable"]["thread_id"], "invoice_text": "t",
+                                "source": "paste", "audit_trail": []}, cfg, stream_mode="values"):
+        statuses.append(values.get("status"))
+    assert during_hold == ["settling"]
+    assert statuses[-2:] == ["settling", "settled"]
+
+
+def test_failed_step_resumes_without_repeating_earlier_steps(checkpointer, ledger, ledger_url):
+    seed_history(ledger, "Acme Supply", [100, 105])
+
+    class FlakyApproval(FakeLLM):
+        failures = 1
+
+        def __call__(self, agent, route, system, user, model):
+            if agent == "approval" and self.failures:
+                self.failures -= 1
+                raise RuntimeError("429 no credits remaining")
+            return super().__call__(agent, route, system, user, model)
+
+    fake = FlakyApproval(invoice(total=42.0))
+    graph = build_graph(Deps(llm=fake, ledger=ledger, sleep=lambda s: None), checkpointer)
+    cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    try:
+        graph.invoke({"run_id": cfg["configurable"]["thread_id"], "invoice_text": "t", "source": "paste",
+                      "audit_trail": []}, cfg)
+    except RuntimeError:
+        pass
+    assert state(graph, cfg)["status"] == "scored" and cash(ledger_url) == 10000
+
+    graph.invoke(None, cfg)  # what POST /runs/{id}/retry does
+    assert state(graph, cfg)["status"] == "settled" and cash(ledger_url) == 10000 - 42
+    agents = [a for a, _ in fake.calls]
+    assert agents.count("extraction") == 1 and agents.count("risk-scoring") == 1  # not re-run, not re-billed
