@@ -46,6 +46,19 @@ def test_only_labelled_fields_are_scored():
     assert checks == {"vendor": True, "total": True}
 
 
+def test_high_average_with_a_bad_field_is_blocked():
+    # The first live gate run: casual scored 0.85 overall with vendor at 0.60.
+    casual = {"accuracy": 0.85, "per_field": {"vendor": 0.60, "date": 0.97, "total": 0.97}}
+    structured = {"accuracy": 0.925, "per_field": {"vendor": 0.82, "date": 0.97, "total": 0.97}}
+    assert evalgate.blocking_reasons(casual) == ["vendor 0.60 < floor 0.75"]
+    assert evalgate.blocking_reasons(structured) == []
+
+
+def test_low_average_is_blocked_even_with_every_field_above_the_floor():
+    r = {"accuracy": 0.78, "per_field": {"vendor": 0.78, "date": 0.78, "total": 0.78}}
+    assert evalgate.blocking_reasons(r) == ["accuracy 0.780 < 0.80"]
+
+
 @pytest.mark.skipif(not os.environ.get("MLFLOW_TRACKING_URI"), reason="needs a running MLflow server")
 def test_gate_promotes_the_passing_candidate_and_blocks_the_other(monkeypatch):
     receipts = [{"external_key": f"X{i}", "text": f"receipt {i}",
@@ -76,6 +89,7 @@ def test_gate_promotes_the_passing_candidate_and_blocks_the_other(monkeypatch):
     versions = {mlflow.genai.load_prompt(name, version=v).tags["candidate"]: mlflow.genai.load_prompt(name, version=v)
                 for v in (1, 2)}
     assert versions["casual"].tags["gate"] == "BLOCKED"
+    assert "vendor 0.00 < floor" in versions["casual"].tags["blocked_because"]
     assert json.loads(json.dumps(versions["casual"].tags))["accuracy"] == "0.333"  # total right; vendor, date missed
 
 

@@ -5,7 +5,7 @@
 This repository is being built in phases (see [Roadmap](#roadmap)):
 
 - **Phase 1, the agent core:** four LLM agents and a deterministic payment executor run as one LangGraph workflow, on real invoice data, with human-in-the-loop approval and a real ledger. Run live on real models; see [the phase 1 live run](docs/live-runs/2026-10-phase-1.md).
-- **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried.
+- **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried. Run live, including the first fully automatic payment; see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md).
 
 ## How a payment flows today
 
@@ -110,7 +110,7 @@ curl -s -X POST localhost:8100/runs/<run_id>/retry
 
 ## Prompt promotion gate (phase 2)
 
-The gate scores each candidate Extraction prompt on held-out SROIE test receipts, through the same code path production uses, against SROIE's ground-truth labels. The metric is deterministic, not an LLM judge: vendor name (token overlap of at least 0.8, so a cashier's name or a "COPY" stamp in the vendor counts as a miss), date (same calendar date in any common format) and total (within 0.01). Every candidate is registered in MLflow with its score; only the best one at or above `PROMOTION_THRESHOLD` (default 0.80) gets the `production` alias.
+The gate scores each candidate Extraction prompt on held-out SROIE test receipts, through the same code path production uses, against SROIE's ground-truth labels. The metric is deterministic, not an LLM judge: vendor name (token overlap of at least 0.8, so a cashier's name or a "COPY" stamp in the vendor counts as a miss), date (same calendar date in any common format) and total (within 0.01). A candidate passes only if its overall accuracy reaches `PROMOTION_THRESHOLD` (default 0.80) **and** every field reaches `FIELD_FLOOR` (default 0.75); the floor was added after the first live gate run showed an average can hide a broken vendor field (see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md)). Every candidate is registered in MLflow with its score and, if blocked, why; only the best passing one gets the `production` alias.
 
 Two candidates ship in `warden-backend/app/prompts/`: `extraction.txt` (structured, with explicit rules) and `candidates/extraction-casual.txt` (the kind of one-line prompt a first draft often is).
 
@@ -134,6 +134,7 @@ Phase 2 adds an `mlflow` database and four settings. Your existing data is kept.
    MIN_PRIOR_PAYMENTS=2
    EVAL_SAMPLE_SIZE=40
    PROMOTION_THRESHOLD=0.80
+   FIELD_FLOOR=0.75
    ```
 3. Create the new database in the existing Postgres (the init script is idempotent and changes nothing else):
    ```sh

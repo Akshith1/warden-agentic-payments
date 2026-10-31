@@ -8,6 +8,15 @@ the best one that clears PROMOTION_THRESHOLD gets the `production` alias the
 backend loads. A candidate below the threshold is registered as BLOCKED and
 can never be served.
 
+Passing needs BOTH an overall accuracy of at least PROMOTION_THRESHOLD AND at
+least FIELD_FLOOR on every field. The floor was added after the first live
+gate run (October 2026): the casual prompt scored 0.85 overall and passed,
+while getting the vendor wrong on 16 of 40 receipts (vendor accuracy 0.60).
+Date and total are easy for every candidate (0.97), so averaging hid the one
+field that decides whether an invoice links to its vendor's payment history.
+0.75 was chosen after seeing that run; the reasoning, not the number, is the
+rule: no single field may be bad enough to break the pipeline downstream.
+
     compose run --rm eval-gate
 
 The metric is deterministic, not LLM-judged: three fields against labels.
@@ -42,6 +51,7 @@ CANDIDATES = {
     "casual": PROMPTS / "candidates" / "extraction-casual.txt",
 }
 THRESHOLD = float(os.environ.get("PROMOTION_THRESHOLD", "0.80"))
+FIELD_FLOOR = float(os.environ.get("FIELD_FLOOR", "0.75"))
 SAMPLE = int(os.environ.get("EVAL_SAMPLE_SIZE", "40"))
 PACE_SECONDS = float(os.environ.get("EVAL_PACE_SECONDS", "1.0"))  # Groq free-tier requests per minute
 VENDOR_MIN_OVERLAP = 0.8
@@ -177,12 +187,23 @@ def evaluate_candidate(name: str, prompt_text: str, receipts: list[dict]) -> dic
             "errors": sum(1 for row in rows if row["error"]), "rows": rows}
 
 
+def blocking_reasons(result: dict) -> list[str]:
+    reasons = []
+    if result["accuracy"] < THRESHOLD:
+        reasons.append(f"accuracy {result['accuracy']:.3f} < {THRESHOLD:.2f}")
+    reasons += [f"{field} {value:.2f} < floor {FIELD_FLOOR:.2f}"
+                for field, value in result["per_field"].items() if value < FIELD_FLOOR]
+    return reasons
+
+
 def register(result: dict, prompt_text: str, promoted: bool) -> int:
     import mlflow
     mlflow.set_experiment("warden-prompt-gate")
-    verdict = "PROMOTED" if promoted else ("PASSED" if result["accuracy"] >= THRESHOLD else "BLOCKED")
+    blocked = blocking_reasons(result)
+    verdict = "PROMOTED" if promoted else ("BLOCKED" if blocked else "PASSED")
     with mlflow.start_run(run_name=f"extraction-{result['name']}") as run:
-        mlflow.log_params({"candidate": result["name"], "threshold": THRESHOLD, "sample_size": len(result["rows"]),
+        mlflow.log_params({"candidate": result["name"], "threshold": THRESHOLD, "field_floor": FIELD_FLOOR,
+                           "sample_size": len(result["rows"]),
                            "route": config.ROUTE_ROUTINE})
         mlflow.log_metrics({"accuracy": result["accuracy"], "errors": result["errors"],
                             **{f"{k}_accuracy": v for k, v in result["per_field"].items()}})
@@ -191,7 +212,8 @@ def register(result: dict, prompt_text: str, promoted: bool) -> int:
             name=config.EXTRACTION_PROMPT_NAME, template=prompt_text,
             commit_message=f"gate run {run.info.run_id}: accuracy {result['accuracy']:.3f} ({verdict})",
             tags={"candidate": result["name"], "gate": verdict, "accuracy": f"{result['accuracy']:.3f}",
-                  "threshold": str(THRESHOLD)})
+                  "threshold": str(THRESHOLD), "field_floor": str(FIELD_FLOOR),
+                  "blocked_because": "; ".join(blocked) or "-"})
     if promoted:
         mlflow.genai.set_prompt_alias(config.EXTRACTION_PROMPT_NAME, "production", pv.version)
     return pv.version
@@ -204,25 +226,26 @@ def main() -> int:
     if not receipts:
         print("no SROIE test receipts in invoice_inbox; run the data loader first")
         return 2
-    print(f"Promotion gate: {len(receipts)} held-out SROIE receipts, threshold {THRESHOLD:.2f}, "
-          f"route {config.ROUTE_ROUTINE}")
+    print(f"Promotion gate: {len(receipts)} held-out SROIE receipts, overall threshold {THRESHOLD:.2f}, "
+          f"per-field floor {FIELD_FLOOR:.2f}, route {config.ROUTE_ROUTINE}")
 
     texts = {name: path.read_text() for name, path in CANDIDATES.items()}
     results = [evaluate_candidate(name, texts[name], receipts) for name in CANDIDATES]
-    passing = [r for r in results if r["accuracy"] >= THRESHOLD]
+    passing = [r for r in results if not blocking_reasons(r)]
     winner = max(passing, key=lambda r: r["accuracy"]) if passing else None
 
-    print("\ncandidate     accuracy  vendor  date   total  errors  verdict      registry version")
+    print("\ncandidate     accuracy  vendor  date   total  errors  verdict      registry version     why")
     for r in results:
         promoted = r is winner
         version = register(r, texts[r["name"]], promoted)
         verdict = "PROMOTED" if promoted else ("passed" if r in passing else "BLOCKED")
         f = r["per_field"]
         print(f"{r['name']:<13} {r['accuracy']:>8.3f}  {f['vendor']:>6.2f}  {f['date']:>5.2f}  {f['total']:>5.2f}"
-              f"  {r['errors']:>6}  {verdict:<11}  {config.EXTRACTION_PROMPT_NAME} v{version}")
+              f"  {r['errors']:>6}  {verdict:<11}  {config.EXTRACTION_PROMPT_NAME} v{version:<4}"
+              f"  {'; '.join(blocking_reasons(r)) or '-'}")
 
     if not winner:
-        print(f"\nNo candidate reached {THRESHOLD:.2f}; the `production` alias was not changed.")
+        print("\nNo candidate passed; the `production` alias was not changed.")
         return 1
     print(f"\n`production` -> {winner['name']}. Restart warden-backend to load it.")
     return 0
