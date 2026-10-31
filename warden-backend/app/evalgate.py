@@ -155,11 +155,35 @@ def held_out_receipts(limit: int) -> list[dict]:
                WHERE source = 'sroie' AND split = 'test' ORDER BY id LIMIT %s""", (limit,)).fetchall()
 
 
+class ProviderUnavailable(Exception):
+    """The provider refused or failed the call (rate limit, quota, outage, timeout).
+    That says nothing about the prompt, so the gate stops rather than score it.
+    Found in the second live gate run: Groq's free-tier daily token limit made
+    calls fail mid-run, and the gate was scoring each refusal as three wrong fields."""
+
+
+def is_provider_error(exc: BaseException) -> bool:
+    import openai
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError)):
+            return True
+        if isinstance(exc, openai.APIStatusError) and (exc.status_code == 429 or exc.status_code >= 500):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def extract(prompt_text: str, document: str) -> tuple[dict, str | None]:
     try:
         out = llm.structured("eval-gate", config.ROUTE_ROUTINE, prompt_text, document, InvoiceExtraction)
         return out.model_dump(), None
-    except Exception as exc:  # a failed extraction scores zero, it does not abort the gate
+    except Exception as exc:
+        # Instructor wraps the provider's error; its message keeps the HTTP status.
+        if is_provider_error(exc) or re.search(r"Error code: (429|5\d\d)", str(exc)):
+            raise ProviderUnavailable(f"{type(exc).__name__}: {str(exc)[:300]}") from exc
+        # The model answered but never produced a valid InvoiceExtraction: a real miss.
         return {}, f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
@@ -230,7 +254,13 @@ def main() -> int:
           f"per-field floor {FIELD_FLOOR:.2f}, route {config.ROUTE_ROUTINE}")
 
     texts = {name: path.read_text() for name, path in CANDIDATES.items()}
-    results = [evaluate_candidate(name, texts[name], receipts) for name in CANDIDATES]
+    try:
+        results = [evaluate_candidate(name, texts[name], receipts) for name in CANDIDATES]
+    except ProviderUnavailable as exc:
+        print(f"\nINCONCLUSIVE: the provider failed a call, so the scores would not measure the prompts.\n"
+              f"  {exc}\nNothing was registered and the `production` alias was not changed. "
+              f"Fix the cause (for example wait for a daily token limit to reset) and run the gate again.")
+        return 3
     passing = [r for r in results if not blocking_reasons(r)]
     winner = max(passing, key=lambda r: r["accuracy"]) if passing else None
 
