@@ -1,0 +1,1 @@
+Look at this receipt text and tell me about the purchase: who sold it, when, and how much it cost. If something is unclear, make your best guess.
