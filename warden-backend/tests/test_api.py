@@ -15,6 +15,7 @@ from .test_graph import FakeLLM, invoice
 
 @pytest.fixture()
 def api(ledger, monkeypatch):
+    monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")  # bundled prompt; the registry is tested separately
     fake = FakeLLM(invoice(vendor="Brand New LLC", total=75.0))
     monkeypatch.setattr(main, "build_graph", lambda deps, cp: build_graph(
         Deps(llm=fake, ledger=ledger, sleep=lambda s: None), cp))
@@ -69,6 +70,7 @@ def test_failed_run_can_be_retried(ledger, monkeypatch):
             return super().__call__(agent, route, system, user, model)
 
     fake = OutOfCredit(invoice(vendor="Acme Supply", total=55.0))
+    monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")
     monkeypatch.setattr(main, "build_graph", lambda deps, cp: build_graph(
         Deps(llm=fake, ledger=ledger, sleep=lambda s: None), cp))
     with TestClient(main.app) as api:

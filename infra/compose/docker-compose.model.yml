@@ -1,8 +1,12 @@
-# Layer: model governance. Phase 2 adds MLflow and the DeepEval gate; phase 8 adds per-agent keys.
+# Layer: model governance: the LLM gateway, the prompt registry and the promotion gate.
+# Phase 8 adds per-agent gateway keys.
 networks:
   default:
     name: warden-net
     external: true
+
+volumes:
+  mlflow-artifacts:
 
 services:
   litellm:
@@ -18,3 +22,43 @@ services:
       resources:
         limits:
           memory: 1g
+
+  mlflow:
+    build: ./infra/mlflow
+    restart: unless-stopped
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=postgresql+psycopg://mlflow:${PGPASS_MLFLOW:?add PGPASS_MLFLOW to .env}@postgres:5432/mlflow
+      - --artifacts-destination=/mlartifacts
+      - --serve-artifacts
+      # One worker is plenty for a single-user registry; the default scales with CPU count.
+      - --workers=1
+      # MLflow rejects unlisted Host headers (DNS-rebinding protection): list the in-network
+      # name and the published host port.
+      - --allowed-hosts=mlflow,mlflow:5000,localhost,localhost:5500,127.0.0.1,127.0.0.1:5500
+    volumes:
+      - mlflow-artifacts:/mlartifacts
+    ports:
+      - "5500:5000"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # One-shot job, not a service:  compose run --rm eval-gate
+  eval-gate:
+    build:
+      context: ./warden-backend
+      dockerfile: Dockerfile.eval
+    profiles: ["jobs"]
+    environment:
+      POSTGRES_HOST: postgres
+      PGPASS_WARDEN_BACKEND: ${PGPASS_WARDEN_BACKEND:?set in .env}
+      LITELLM_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:?set in .env}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      EVAL_SAMPLE_SIZE: ${EVAL_SAMPLE_SIZE:-40}
+      PROMOTION_THRESHOLD: ${PROMOTION_THRESHOLD:-0.80}
