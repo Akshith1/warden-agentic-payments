@@ -122,6 +122,8 @@ curl -s localhost:8100/health                         # extraction_prompt: {"sou
 
 It prints a table of accuracy per candidate and field and a verdict (PROMOTED, passed or BLOCKED); the per-document results are in MLflow at http://localhost:5500 under the `warden-prompt-gate` experiment and the `warden-extraction` prompt. It calls Groq only (`warden-routine`), 80 calls at the default sample size, paced for the free tier.
 
+**Groq free-tier budget.** `gpt-oss-120b` on the free tier allows 200,000 tokens per day (rolling 24 hours), and one gate run at 40 receipts uses most of that; the agents' own calls share the same budget. On the free tier, run the gate at most once a day, or set `EVAL_SAMPLE_SIZE=20`. If the provider refuses a call (429, 5xx, timeout), the gate stops as **INCONCLUSIVE** (exit code 3), registers nothing and leaves `production` unchanged: a refused call says nothing about the prompt, so it is never scored as a wrong answer.
+
 ## Upgrading from phase 1
 
 Phase 2 adds an `mlflow` database and four settings. Your existing data is kept.

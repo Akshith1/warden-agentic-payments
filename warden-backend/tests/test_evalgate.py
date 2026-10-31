@@ -109,3 +109,49 @@ def test_gate_leaves_production_alone_when_nothing_passes(monkeypatch):
     import mlflow
     with pytest.raises(Exception):
         mlflow.genai.load_prompt(f"prompts:/{name}@production")
+
+
+def test_provider_refusal_stops_the_gate_instead_of_scoring_misses(monkeypatch):
+    # The second live gate run: Groq's daily token limit (429) mid-run.
+    import httpx
+    import openai
+    from instructor.core.exceptions import InstructorRetryException
+
+    calls = []
+
+    def rate_limited(agent, route, system, user, model):
+        calls.append(user)
+        if len(calls) < 3:
+            return InvoiceExtraction(vendor_name="A SDN BHD", invoice_number=None, invoice_date=None,
+                                     total_amount=9.0, remit_to_account=None, extraction_confidence=0.9)
+        req = httpx.Request("POST", "http://litellm:4000/chat/completions")
+        cause = openai.RateLimitError("Rate limit reached ... tokens per day (TPD)",
+                                      response=httpx.Response(429, request=req), body=None)
+        raise InstructorRetryException("Error code: 429 - rate limit", n_attempts=1, total_usage=0) from cause
+
+    receipts = [{"external_key": f"X{i}", "text": f"r{i}", "labels": {"company": "A SDN BHD", "total": "9.00"}}
+                for i in range(10)]
+    registered = []
+    monkeypatch.setattr(evalgate, "held_out_receipts", lambda n: receipts)
+    monkeypatch.setattr(evalgate.llm, "structured", rate_limited)
+    monkeypatch.setattr(evalgate, "PACE_SECONDS", 0)
+    monkeypatch.setattr(evalgate, "register", lambda *a: registered.append(a))
+    monkeypatch.setattr(evalgate.config, "MLFLOW_TRACKING_URI", "http://unused")
+
+    assert evalgate.main() == 3
+    assert len(calls) == 3 and registered == []  # stopped at the first refusal; nothing registered
+
+
+def test_a_model_that_never_validates_is_a_real_miss():
+    from instructor.core.exceptions import InstructorRetryException
+
+    def invalid(*_a):
+        raise InstructorRetryException("1 validation error for InvoiceExtraction", n_attempts=3, total_usage=0)
+
+    original = evalgate.llm.structured
+    evalgate.llm.structured = invalid
+    try:
+        predicted, error = evalgate.extract("prompt", "doc")
+    finally:
+        evalgate.llm.structured = original
+    assert predicted == {} and "validation error" in error
