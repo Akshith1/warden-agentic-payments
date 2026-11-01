@@ -15,6 +15,7 @@ from .test_graph import FakeLLM, invoice
 
 @pytest.fixture()
 def api(ledger, monkeypatch):
+    monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")  # bundled prompt; the registry is tested separately
     fake = FakeLLM(invoice(vendor="Brand New LLC", total=75.0))
     monkeypatch.setattr(main, "build_graph", lambda deps, cp: build_graph(
         Deps(llm=fake, ledger=ledger, sleep=lambda s: None), cp))
@@ -51,4 +52,31 @@ def test_submit_queue_resume(api):
 def test_unknown_run_and_validation(api):
     assert api.get("/runs/does-not-exist").status_code == 404
     assert api.post("/runs", json={"invoice_text": ""}).status_code == 422
-    assert api.get("/health").json() == {"status": "ok"}
+    assert api.get("/health").json() == {"status": "ok",
+                                         "extraction_prompt": {"source": "bundled", "version": None}}
+
+
+def test_failed_run_can_be_retried(ledger, monkeypatch):
+    from .test_graph import seed_history
+    seed_history(ledger, "Acme Supply", [100, 105])
+
+    class OutOfCredit(FakeLLM):
+        failures = 1
+
+        def __call__(self, agent, route, system, user, model):
+            if agent == "approval" and self.failures:
+                self.failures -= 1
+                raise RuntimeError("You have no credits remaining")
+            return super().__call__(agent, route, system, user, model)
+
+    fake = OutOfCredit(invoice(vendor="Acme Supply", total=55.0))
+    monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")
+    monkeypatch.setattr(main, "build_graph", lambda deps, cp: build_graph(
+        Deps(llm=fake, ledger=ledger, sleep=lambda s: None), cp))
+    with TestClient(main.app) as api:
+        run_id = api.post("/runs", json={"invoice_text": "Acme ..."}).json()["run_id"]
+        row = wait_for(api, run_id, "failed")
+        assert "no credits remaining" in row["status_reason"]
+        assert api.post(f"/runs/{run_id}/retry").status_code == 202
+        assert api.post(f"/runs/{run_id}/retry").status_code == 409  # already claimed
+        wait_for(api, run_id, "settled")

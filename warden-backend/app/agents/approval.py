@@ -5,10 +5,24 @@ from ..schemas import ApprovalDecision, RunState
 from . import Deps, audit, prompt
 
 
+def rules_context() -> dict:
+    """Tells the model which rules code has already applied, so it judges the
+    evidence instead of re-deciding policy (the phase 1 live run escalated on
+    exactly these two points before they were written down)."""
+    return {
+        "ledger_currency": config.LEDGER_CURRENCY,
+        "currency_rule": "A document that shows no currency is in the ledger currency (currency_assumed=true). "
+                         "Other currencies are escalated by code before you see them.",
+        "minimum_prior_payments": config.MIN_PRIOR_PAYMENTS,
+        "history_rule": "Vendors with fewer settled payments than the minimum are escalated by code before you "
+                        "see them; you only see vendors that meet it.",
+    }
+
+
 def run(state: RunState, deps: Deps) -> dict:
     ext = state["extraction"]
-    evidence = json.dumps({"invoice": ext, "vendor_history": state["vendor"], "risk": state["risk"]},
-                          default=str, indent=2)
+    evidence = json.dumps({"invoice": ext, "vendor_history": state["vendor"], "risk": state["risk"],
+                           "rules_already_enforced": rules_context()}, default=str, indent=2)
     decision = deps.llm("approval", config.ROUTE_REASONING, prompt("approval"), evidence, ApprovalDecision)
 
     trail = audit("approval", decision=decision.decision, confidence=decision.confidence)

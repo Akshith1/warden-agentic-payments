@@ -1,0 +1,13 @@
+# The promotion gate runs the backend's own extraction code, so it builds from
+# the same source plus DeepEval. A one-shot job, not a service.
+FROM python:3.13-slim
+WORKDIR /srv
+RUN useradd --create-home --uid 10001 app
+COPY requirements.txt requirements-eval.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-eval.txt
+COPY app ./app
+USER app
+WORKDIR /home/app
+# No git in the image; tell MLflow's git lookup to stay quiet instead of printing a page of warnings.
+ENV PYTHONPATH=/srv DEEPEVAL_TELEMETRY_OPT_OUT=YES MLFLOW_DISABLE_AGENT_HINT=1 GIT_PYTHON_REFRESH=quiet
+CMD ["python", "-m", "app.evalgate"]

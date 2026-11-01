@@ -17,6 +17,7 @@ services:
       PGPASS_WARDEN_LEDGER: ${PGPASS_WARDEN_LEDGER:?set in .env}
       PGPASS_WARDEN_BACKEND: ${PGPASS_WARDEN_BACKEND:?set in .env}
       PGPASS_LITELLM: ${PGPASS_LITELLM:?set in .env}
+      PGPASS_MLFLOW: ${PGPASS_MLFLOW:?add PGPASS_MLFLOW to .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres-init:/docker-entrypoint-initdb.d:ro

@@ -46,8 +46,10 @@ class CriticReview(BaseModel):
 
 Status = Literal[
     "submitted", "extracted", "scored", "pending_human",
-    "approved", "rejected", "blocked", "settled",
-]  # follows the A2A TaskState idea: one explicit lifecycle state per run
+    "approved", "settling", "rejected", "blocked", "settled",
+]  # follows the A2A TaskState idea: one explicit lifecycle state per run.
+# The runs table adds service states outside the graph: resuming, failed (a provider or
+# infrastructure error; retryable) and retrying.
 
 
 class RunState(TypedDict, total=False):

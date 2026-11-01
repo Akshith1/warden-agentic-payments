@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from . import config
 from .agents import Deps
 from .graph import build_graph
+from .prompt_registry import load_extraction_prompt
 
 log = logging.getLogger("warden")
 
@@ -35,7 +36,8 @@ CREATE TABLE IF NOT EXISTS runs (
 class Runtime:
     pool: ConnectionPool
     graph = None
-    workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="run")
+    deps: Deps
+    workers: ThreadPoolExecutor
 
 
 rt = Runtime()
@@ -51,7 +53,11 @@ async def lifespan(_app):
     checkpointer.setup()
     with rt.pool.connection() as conn:
         conn.execute(RUNS_TABLE)
-    rt.graph = build_graph(Deps(), checkpointer)
+        # Phase 1 recorded provider errors as 'blocked'; relabel them so they can be retried.
+        conn.execute("UPDATE runs SET status = 'failed' WHERE status = 'blocked' AND status_reason LIKE 'error:%%'")
+    rt.workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="run")
+    rt.deps = Deps(extraction_prompt=load_extraction_prompt())
+    rt.graph = build_graph(rt.deps, checkpointer)
     yield
     rt.workers.shutdown(wait=False)
     rt.pool.close()
@@ -93,18 +99,22 @@ def _drive(run_id: str, graph_input) -> None:
     try:
         for values in rt.graph.stream(graph_input, _config(run_id), stream_mode="values"):
             _sync(run_id, values)
-    except Exception as exc:  # a crashed run must not look like it is still working
+    except Exception as exc:
+        # A crashed run must not look like it is still working. 'failed' (not 'blocked'):
+        # nothing decided against this invoice; a provider or infrastructure error stopped it,
+        # and the checkpoint lets POST /runs/{id}/retry continue from the step that failed.
         log.exception("run %s failed", run_id)
         with rt.pool.connection() as conn:
-            conn.execute("UPDATE runs SET status = 'blocked', status_reason = %s, updated_at = now() "
-                         "WHERE run_id = %s", (f"error: {type(exc).__name__}: {exc}"[:500], run_id))
+            conn.execute("UPDATE runs SET status = 'failed', status_reason = %s, updated_at = now() "
+                         "WHERE run_id = %s", (f"error: {type(exc).__name__}: {exc}"[:1000], run_id))
 
 
 @app.get("/health")
 def health():
     with rt.pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok"}
+    p = rt.deps.extraction_prompt
+    return {"status": "ok", "extraction_prompt": {"source": p.source, "version": p.version}}
 
 
 @app.post("/runs", status_code=202)
@@ -151,3 +161,16 @@ def resume(run_id: str, req: ResumeRequest):
         raise HTTPException(status_code=409, detail="run is already being resumed")
     rt.workers.submit(_drive, run_id, Command(resume=req.model_dump()))
     return {"run_id": run_id, "status": "resuming"}
+
+
+@app.post("/runs/{run_id}/retry", status_code=202)
+def retry(run_id: str):
+    """Continues a failed run from the step that raised. Steps that already
+    finished are not repeated: their results are in the checkpoint."""
+    with rt.pool.connection() as conn:
+        claimed = conn.execute("UPDATE runs SET status = 'retrying', status_reason = NULL, updated_at = now() "
+                               "WHERE run_id = %s AND status = 'failed' RETURNING run_id", (run_id,)).fetchone()
+    if not claimed:
+        raise HTTPException(status_code=409, detail="only a failed run can be retried")
+    rt.workers.submit(_drive, run_id, None)
+    return {"run_id": run_id, "status": "retrying"}
