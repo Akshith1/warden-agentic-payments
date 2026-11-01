@@ -134,7 +134,18 @@ table.lines { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
 .decide p { margin: 0.5rem 0; }
 .decide ul { margin: 0.25rem 0 0.75rem; padding-left: 1.2rem; }
 .decide label { display: grid; gap: 0.25rem; margin: 0.75rem 0; font-weight: 600; font-size: var(--step--1); }
-.decide input { font: inherit; font-weight: 400; padding: 0.5rem 0.6rem; border: 1px solid var(--rule); border-radius: 6px; background: #fff; }
+.decide input:not([type=radio]) { font: inherit; font-weight: 400; padding: 0.5rem 0.6rem; border: 1px solid var(--rule); border-radius: 6px; background: #fff; }
+.same-vendor { margin: 1rem 0; padding: 0.9rem 1rem; border: 1px solid var(--rule); border-radius: 6px; background: #fff; min-width: 0; }
+.same-vendor legend { font-weight: 600; padding: 0 0.35rem; }
+.search-row { display: flex; gap: 0.5rem; margin: 0.6rem 0; }
+.search-row input { flex: 1; min-width: 0; }
+.choices { display: grid; gap: 0.15rem; }
+.decide label.choice { display: flex; gap: 0.6rem; align-items: flex-start; margin: 0; padding: 0.45rem 0.3rem;
+  font-weight: 400; font-size: var(--step-0, 1rem); border-radius: 4px; cursor: pointer; overflow-wrap: anywhere; }
+.decide label.choice:hover { background: var(--paper); }
+.choice input { margin-top: 0.3rem; flex: none; }
+.block { display: block; }
+.warn { color: var(--stopped); font-weight: 600; }
 .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 1rem 0 0.5rem; }
 .why-long { color: var(--failed); font-size: var(--step--1); overflow-wrap: anywhere; }
 

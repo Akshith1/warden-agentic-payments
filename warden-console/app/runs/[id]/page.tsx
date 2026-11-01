@@ -1,10 +1,10 @@
 "use client";
 import Link from "next/link";
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { Status } from "@/components/Status";
 import { clock, money, plainReason, seconds } from "@/lib/format";
 import { FINISHED, STEP_LABEL, statusOf } from "@/lib/status";
-import type { RunDetail, TrailEntry } from "@/lib/types";
+import type { RunDetail, TrailEntry, VendorCandidate } from "@/lib/types";
 import { post, useLive } from "@/lib/useLive";
 
 export default function RunPage({ params }: { params: Promise<{ id: string }> }) {
@@ -68,12 +68,21 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                     ? `${state.vendor.payment_count} settled payments, average ${money(state.vendor.average_amount)}`
                     : "Never paid before"
                   : "Not checked yet"}
+                {state.vendor?.matched_alias ? (
+                  <span className="muted small block">
+                    Paid as {state.vendor.vendor_name}; this name is a confirmed alias
+                  </span>
+                ) : null}
               </dd>
             </div>
             {ext && <div><dt>Read with confidence</dt><dd>{Math.round(ext.extraction_confidence * 100)}%</dd></div>}
           </dl>
 
-          {status === "pending_human" && <Decide id={id} reasons={state.escalation_reasons ?? []} onDone={reload} />}
+          {status === "pending_human" && (
+            <Decide id={id} reasons={state.escalation_reasons ?? []} onDone={reload}
+              firstSeen={state.vendor?.known === false ? (ext?.vendor_name ?? null) : null}
+              invoiceRemit={ext?.remit_to_account ?? null} />
+          )}
           {status === "failed" && <Retry id={id} reason={reason} onDone={reload} />}
           {reason && status !== "failed" && status !== "pending_human" && <p className="notice">{plainReason(reason)}</p>}
 
@@ -120,7 +129,8 @@ function Step({ entry, previous }: { entry: TrailEntry; previous?: TrailEntry })
       detail = e.agrees ? "Agreed" : `Objected: ${(e.concerns as string[]).join("; ")}`;
       break;
     case "human_review":
-      detail = `${e.decision === "approve" ? "Approved" : "Rejected"} by ${e.approver}${e.note ? `: ${e.note}` : ""}`;
+      detail = `${e.decision === "approve" ? "Approved" : "Rejected"} by ${e.approver}${e.note ? `: ${e.note}` : ""}${
+        e.linked_to ? `. Confirmed as ${e.linked_to}, which has ${e.linked_payment_count} earlier payment(s)` : ""}`;
       break;
     case "dry_run":
       detail = e.valid ? "Would balance; nothing written" : `Refused: ${(e.errors as string[]).join("; ")}`;
@@ -144,9 +154,12 @@ function Step({ entry, previous }: { entry: TrailEntry; previous?: TrailEntry })
   );
 }
 
-function Decide({ id, reasons, onDone }: { id: string; reasons: string[]; onDone: () => void }) {
+function Decide({ id, reasons, onDone, firstSeen, invoiceRemit }: {
+  id: string; reasons: string[]; onDone: () => void; firstSeen: string | null; invoiceRemit: string | null;
+}) {
   const [approver, setApprover] = useState("");
   const [note, setNote] = useState("");
+  const [sameAs, setSameAs] = useState<VendorCandidate | null>(null);
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -154,7 +167,10 @@ function Decide({ id, reasons, onDone }: { id: string; reasons: string[]; onDone
     setBusy(decision);
     setError(null);
     try {
-      await post(`/api/backend/runs/${id}/resume`, { decision, approver: approver.trim(), note });
+      await post(`/api/backend/runs/${id}/resume`, {
+        decision, approver: approver.trim(), note,
+        ...(decision === "approve" && sameAs ? { same_vendor_id: sameAs.vendor_id } : {}),
+      });
       onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -167,6 +183,7 @@ function Decide({ id, reasons, onDone }: { id: string; reasons: string[]; onDone
       <h2>Your decision</h2>
       <p>The agents sent this to a person because:</p>
       <ul>{reasons.map((r) => <li key={r}>{r}</li>)}</ul>
+      {firstSeen && <SameVendor name={firstSeen} invoiceRemit={invoiceRemit} chosen={sameAs} onChoose={setSameAs} />}
       <label>
         Your name
         <input value={approver} onChange={(e) => setApprover(e.target.value)} autoComplete="name" required />
@@ -179,15 +196,83 @@ function Decide({ id, reasons, onDone }: { id: string; reasons: string[]; onDone
       <div className="actions">
         <button type="button" className="button button-pay" disabled={!approver.trim() || busy !== null}
           onClick={() => decide("approve")}>
-          {busy === "approve" ? "Approving…" : "Approve payment"}
+          {busy === "approve" ? "Approving…" : sameAs ? "Approve and link vendor" : "Approve payment"}
         </button>
         <button type="button" className="button button-quiet" disabled={!approver.trim() || busy !== null}
           onClick={() => decide("reject")}>
           {busy === "reject" ? "Rejecting…" : "Reject"}
         </button>
       </div>
-      <p className="muted small">Approving starts the dry run and the settlement hold. Phase 6 takes your name from your login.</p>
+      <p className="muted small">
+        Approving starts the dry run and the settlement hold.{" "}
+        {sameAs ? "Your name is recorded as the person who confirmed the vendor link. " : ""}
+        Phase 6 takes your name from your login.
+      </p>
     </form>
+  );
+}
+
+function SameVendor({ name, invoiceRemit, chosen, onChoose }: {
+  name: string; invoiceRemit: string | null; chosen: VendorCandidate | null; onChoose: (c: VendorCandidate | null) => void;
+}) {
+  const [query, setQuery] = useState(name);
+  const [found, setFound] = useState<VendorCandidate[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function search(q: string) {
+    setError(null);
+    try {
+      const res = await fetch(`/api/ledger/vendors/search?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.detail ?? `HTTP ${res.status}`);
+      setFound(body as VendorCandidate[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  useEffect(() => { search(name); }, [name]);
+  const key = (s: string | null) => (s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  return (
+    <fieldset className="same-vendor">
+      <legend>Is this a vendor you already pay?</legend>
+      <p className="small">
+        The ledger has never paid <strong>{name}</strong>. If that is another name for a vendor you already pay,
+        choose it: both names will then share one payment history. Nothing is matched automatically.
+      </p>
+      <div className="search-row">
+        <input aria-label="Search vendors" value={query} onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); search(query); } }} />
+        <button type="button" className="button button-quiet" onClick={() => search(query)}>Search</button>
+      </div>
+      {error && <p className="notice notice-error">{error}</p>}
+      <div className="choices" role="radiogroup">
+        <label className="choice">
+          <input type="radio" name="same-vendor" checked={chosen === null} onChange={() => onChoose(null)} />
+          <span>No, it is a new vendor</span>
+        </label>
+        {found?.map((c) => {
+          const otherAccount = invoiceRemit && c.last_remit_account && key(invoiceRemit) !== key(c.last_remit_account);
+          return (
+            <label className="choice" key={c.vendor_id}>
+              <input type="radio" name="same-vendor" checked={chosen?.vendor_id === c.vendor_id}
+                onChange={() => onChoose(c)} />
+              <span>
+                {c.vendor_name}
+                <span className="muted small block">
+                  {c.payment_count} settled payment{c.payment_count === 1 ? "" : "s"}
+                  {c.last_remit_account ? `, last paid to ${c.last_remit_account}` : ""}
+                  {c.aliases.length ? `. Also known as ${c.aliases.join(", ")}` : ""}
+                </span>
+                {otherAccount && <span className="warn small block">This invoice asks to be paid to a different account</span>}
+              </span>
+            </label>
+          );
+        })}
+        {found && found.length === 0 && <p className="muted small">No vendors with a similar name.</p>}
+      </div>
+    </fieldset>
   );
 }
 

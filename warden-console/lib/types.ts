@@ -31,12 +31,20 @@ export type RunDetail = {
     status: string;
     status_reason?: string;
     extraction?: Extraction;
-    vendor?: { known: boolean; payment_count: number; average_amount: string | null; last_remit_account: string | null };
+    vendor?: {
+      known: boolean;
+      vendor_name: string;
+      vendor_id?: number | null;
+      matched_alias?: string | null;
+      payment_count: number;
+      average_amount: string | null;
+      last_remit_account: string | null;
+    };
     risk?: { risk_level: string; risk_score: number; signals: string[]; rationale: string };
     approval?: { decision: string; confidence: number; reasons: string[] };
     critic?: { agrees: boolean; concerns: string[] };
     escalation_reasons?: string[];
-    human?: { decision: string; approver: string; note?: string };
+    human?: { decision: string; approver: string; note?: string; same_vendor_id?: number | null };
     payment?: { transaction_id?: number; amount?: string; idempotency_key?: string };
     audit_trail: TrailEntry[];
   };
@@ -49,4 +57,12 @@ export type InboxRow = {
   preview: string;
   labelled_vendor: string | null;
   labelled_total: string | null;
+};
+
+export type VendorCandidate = {
+  vendor_id: number;
+  vendor_name: string;
+  payment_count: number;
+  last_remit_account: string | null;
+  aliases: string[];
 };

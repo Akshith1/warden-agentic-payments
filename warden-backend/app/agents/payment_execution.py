@@ -13,7 +13,10 @@ from . import Deps, audit
 def idempotency_key(state: RunState) -> str:
     ext = state["extraction"]
     if ext.get("invoice_number"):
-        vendor = re.sub(r"[^A-Z0-9]+", "-", ext["vendor_name"].upper()).strip("-")
+        # The ledger's name for the vendor when it has one, so the same invoice read under
+        # a confirmed alias still collides with the first payment instead of paying twice.
+        name = (state.get("vendor") or {}).get("vendor_name") or ext["vendor_name"]
+        vendor = re.sub(r"[^A-Z0-9]+", "-", name.upper()).strip("-")
         number = re.sub(r"[^A-Z0-9]+", "-", ext["invoice_number"].upper()).strip("-")
         return f"inv:{vendor}:{number}"  # the same invoice submitted twice collides here
     return f"run:{state['run_id']}"

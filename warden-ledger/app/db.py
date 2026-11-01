@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS historical_payments (
     external_ref   TEXT NOT NULL UNIQUE,
     remit_account  TEXT
 );
+-- Other names a person has confirmed belong to an existing vendor. Never
+-- created by fuzzy matching: look-alike names are a classic payment fraud.
+CREATE TABLE IF NOT EXISTS vendor_aliases (
+    normalized_alias  TEXT PRIMARY KEY,
+    vendor_id         INT NOT NULL REFERENCES vendors(id),
+    display_alias     TEXT NOT NULL,
+    confirmed_by      TEXT NOT NULL,
+    run_ref           TEXT,
+    confirmed_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS historical_payments_vendor_idx ON historical_payments (vendor_id, paid_on DESC);
 """
 
@@ -92,3 +102,18 @@ def init_schema(conn) -> None:
 
 def normalize_vendor(name: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9 ]", " ", name.upper())).strip()
+
+
+def resolve_vendor(conn, name: str):
+    """The vendor a name belongs to: its own name first, then a confirmed alias.
+    Returns the vendor row plus `matched_alias` (None for a direct match), or None."""
+    key = normalize_vendor(name)
+    row = conn.execute("SELECT id, display_name, first_seen, NULL::text AS matched_alias "
+                       "FROM vendors WHERE normalized_name = %s", (key,)).fetchone()
+    if row:
+        return row
+    return conn.execute(
+        """SELECT v.id, v.display_name, v.first_seen, a.display_alias AS matched_alias
+           FROM vendor_aliases a JOIN vendors v ON v.id = a.vendor_id WHERE a.normalized_alias = %s""",
+        (key,),
+    ).fetchone()

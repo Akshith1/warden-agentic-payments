@@ -6,6 +6,7 @@ This repository is being built in phases (see [Roadmap](#roadmap)):
 
 - **Phase 1, the agent core:** four LLM agents and a deterministic payment executor run as one LangGraph workflow, on real invoice data, with human-in-the-loop approval and a real ledger. Run live on real models; see [the phase 1 live run](docs/live-runs/2026-10-phase-1.md).
 - **Phase 3, the console:** a web app at http://localhost:3100 to submit invoices, watch each agent's step as it happens, decide escalated invoices, retry failed runs, and see the ledger and the rules in force.
+- **Phase 3.5, the vendor master:** when an approver recognises a "first-seen" vendor as one already paid under another name, they link the two in the console. The link is stored as a confirmed alias, so both names share one payment history and one duplicate-invoice check. Nothing is ever matched automatically. See [Vendor aliases](#vendor-aliases-phase-35).
 - **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried. Run live, including the first fully automatic payment; see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md).
 
 ## How a payment flows today
@@ -117,12 +118,32 @@ Open http://localhost:3100 once the stack is up.
 | Page | What you do there |
 | --- | --- |
 | Runs | Every invoice, newest first, refreshing by itself. A banner and a count show how many need your decision. |
-| A run | The invoice as the agents read it, the trail of each agent's step with timings, and the outcome stamp. Approve or reject an escalated invoice; retry one that failed on a provider error. |
+| A run | The invoice as the agents read it, the trail of each agent's step with timings, and the outcome stamp. Approve or reject an escalated invoice, linking a first-seen vendor to an existing one if it is the same business; retry one that failed on a provider error. |
 | Submit invoice | Paste invoice text, or submit one of the loaded SROIE receipts. |
 | Ledger | Account balances and recent double-entry postings. |
 | Governance | The Extraction prompt version in use and the rules enforced in code, read from the running backend. |
 
 The browser only talks to the console's own server, which relays a fixed list of backend endpoints and read-only ledger endpoints; the ledger key stays on the server, and the console cannot write to the ledger. Pages refresh by polling every 1.5 to 5 seconds rather than over a WebSocket, which is enough for runs that change every few seconds. The approver's name is typed in until phase 6 adds Keycloak logins.
+
+## Vendor aliases (phase 3.5)
+
+The same shop can be read under two names. In the phase 3 live run, a receipt from a vendor already paid as `TAN CHAY YEE *** COPY *** OJC MARKETING SDN BHD` came back as `TAN CHAY YEE OJC MARKETING SDN BHD`, so the ledger treated it as a vendor it had never paid.
+
+When an invoice is escalated as a first-seen vendor, the decision form asks **"Is this a vendor you already pay?"** and lists ledger vendors with similar names, each with its payment count and last pay-to account. It flags a vendor whose last account differs from the invoice. If the approver picks one and approves:
+
+1. The backend records the invoice's vendor name as an alias of the chosen vendor (`POST /vendors/aliases` on the ledger, with the write key), with the approver's name and the run id.
+2. The review step reads the vendor back from the ledger, and the trail shows "Confirmed as ..., which has N earlier payments".
+3. The payment's duplicate-invoice key uses the vendor's own ledger name, so the same invoice read later under either name is refused as a duplicate.
+4. Future invoices under the alias are known vendors with the full history, and their payments count toward that history.
+
+Rules that keep this from becoming a fraud path:
+
+- **No automatic matching.** `GET /vendors/search` only lists candidates and links nothing. Look-alike vendor names are a classic way to redirect payments, so only a person's confirmation creates a link.
+- **Only on approval, only for first-seen vendors.** Linking with a rejection is refused (422), as is relinking a name the ledger already knows (409).
+- **An alias belongs to one vendor.** Pointing an existing alias, or another vendor's own name, at a different vendor is refused (409). Repeating the same confirmation is harmless.
+- **The console still can't write to the ledger.** The link travels through the backend's resume endpoint; the console's ledger proxy stays read-only.
+
+The approver's name is typed in until phase 6 takes it from the login.
 
 ## Prompt promotion gate (phase 2)
 
@@ -176,7 +197,7 @@ cd warden-ledger && pip install -r requirements.txt -r requirements-dev.txt && p
 cd warden-backend && pip install -r requirements.txt -r requirements-dev.txt && pytest -q
 ```
 
-They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise).
+They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused.
 
 ## Known simplifications
 
@@ -197,6 +218,7 @@ These are deliberate and each one is removed by a named later phase.
 | 1 | Agent core (done) | 01 |
 | 2 | MLflow prompt registry, DeepEval gate, vendor trust loop (done) | 04, 05, 21 |
 | 3 | Next.js console: submit, live run view, approval queue (done) | 01 from the browser |
+| 3.5 | Vendor master: human-confirmed aliases (done) | phase 3 live-run finding |
 | 4 | Cedar policies, temporal rate limit, capability manifests | 06, 07, 09, 10, 23 |
 | 5 | Guardrail model, sandboxed OCR (Landlock), confidence gate, dry run, hold | 08, 11, 16, 17, 18 |
 | 6 | Keycloak, SPIRE, Infisical | 02, 20 |

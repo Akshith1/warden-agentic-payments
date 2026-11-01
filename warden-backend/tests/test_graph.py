@@ -250,3 +250,29 @@ def test_failed_step_resumes_without_repeating_earlier_steps(checkpointer, ledge
     assert state(graph, cfg)["status"] == "settled" and cash(ledger_url) == 10000 - 42
     agents = [a for a, _ in fake.calls]
     assert agents.count("extraction") == 1 and agents.count("risk-scoring") == 1  # not re-run, not re-billed
+
+
+def test_person_links_a_first_seen_name_to_an_existing_vendor(checkpointer, ledger, ledger_url):
+    # The phase 3 live run: the same shop read under a second name looked first-seen.
+    seed_history(ledger, "Acme Supply", [100, 105])
+    acme = ledger.lookup_vendor("Acme Supply")["vendor_id"]
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(vendor="Cashier Lee ACME SUPPLY", number="INV-7",
+                                                           total=80.0)))
+    assert state(graph, cfg)["status"] == "pending_human"
+
+    ok, _ = ledger.confirm_alias("Cashier Lee ACME SUPPLY", acme, "controller-1", cfg["configurable"]["thread_id"])
+    assert ok  # the API does this before resuming; see test_api
+    graph.invoke(Command(resume={"decision": "approve", "approver": "controller-1", "same_vendor_id": acme}), cfg)
+
+    s = state(graph, cfg)
+    assert s["status"] == "settled" and cash(ledger_url) == 10000 - 80
+    review = next(e for e in s["audit_trail"] if e["step"] == "human_review")
+    assert review["linked_to"] == "Acme Supply" and review["linked_payment_count"] == 2
+    assert s["payment"]["idempotency_key"] == "inv:ACME-SUPPLY:INV-7"  # the vendor's own name, not the alias
+    assert ledger.lookup_vendor("Acme Supply")["payment_count"] == 3  # one history for both names
+
+    # The same invoice read later under the vendor's own name is now a duplicate, not a second payment.
+    graph2, cfg2 = run(checkpointer, ledger, FakeLLM(invoice(vendor="Acme Supply", number="INV-7", total=80.0)))
+    s2 = state(graph2, cfg2)
+    assert s2["status"] == "blocked" and "duplicate idempotency key" in s2["status_reason"]
+    assert cash(ledger_url) == 10000 - 80

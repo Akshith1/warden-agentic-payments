@@ -75,6 +75,9 @@ class ResumeRequest(BaseModel):
     decision: Literal["approve", "reject"]
     approver: str = Field(min_length=1, description="Phase 6 takes this from the Keycloak token instead")
     note: str = ""
+    same_vendor_id: int | None = Field(default=None, description=(
+        "Only for a first-seen vendor, only with approve: the person confirms this invoice's vendor "
+        "is this existing ledger vendor, recorded as an alias so both names share one history."))
 
 
 def _config(run_id: str) -> dict:
@@ -167,6 +170,8 @@ def resume(run_id: str, req: ResumeRequest):
     snapshot = rt.graph.get_state(_config(run_id))
     if not snapshot.interrupts:
         raise HTTPException(status_code=409, detail="run is not waiting for a human")
+    if req.same_vendor_id is not None:
+        _confirm_alias(run_id, snapshot.values, req)
     with rt.pool.connection() as conn:  # atomic claim, so two clicks can't resume the same run twice
         claimed = conn.execute("UPDATE runs SET status = 'resuming', updated_at = now() "
                                "WHERE run_id = %s AND status = 'pending_human' RETURNING run_id", (run_id,)).fetchone()
@@ -174,6 +179,17 @@ def resume(run_id: str, req: ResumeRequest):
         raise HTTPException(status_code=409, detail="run is already being resumed")
     rt.workers.submit(_drive, run_id, Command(resume=req.model_dump()))
     return {"run_id": run_id, "status": "resuming"}
+
+
+def _confirm_alias(run_id: str, values: dict, req: ResumeRequest) -> None:
+    if req.decision != "approve":
+        raise HTTPException(status_code=422, detail="a vendor can only be linked when approving")
+    if (values.get("vendor") or {}).get("known", True):
+        raise HTTPException(status_code=409, detail="only a first-seen vendor can be linked to an existing one")
+    ok, result = rt.deps.ledger.confirm_alias(values["extraction"]["vendor_name"], req.same_vendor_id,
+                                              req.approver.strip(), run_id)
+    if not ok:  # the run stays pending_human, so the person can choose again
+        raise HTTPException(status_code=409, detail=f"could not link the vendor: {result}")
 
 
 @app.post("/runs/{run_id}/retry", status_code=202)

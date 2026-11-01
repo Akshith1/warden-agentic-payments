@@ -108,3 +108,63 @@ def test_vendor_history_builds_trust(client):
     assert after["known"] and after["payment_count"] == 3
     assert float(after["average_amount"]) == 110.0
     assert after["first_seen"] == "2026-01-01" and after["last_remit_account"] == "ACCT-1"
+
+
+def record(client, name, ref, amount="100.00", remit="ACCT-1"):
+    return client.post("/vendors/record-payment", headers=W, json={
+        "vendor_name": name, "amount": amount, "paid_on": "2026-01-01", "external_ref": ref,
+        "remit_account": remit}).json()
+
+
+def test_confirmed_alias_shares_the_vendors_history(client):
+    # The phase 3 live run: the same shop read as two different names.
+    vid = record(client, "TAN CHAY YEE *** COPY *** OJC MARKETING SDN BHD", "r1")["vendor_id"]
+    new_name = "TAN CHAY YEE OJC MARKETING SDN BHD"
+    assert client.get("/vendors/lookup", params={"name": new_name}, headers=R).json()["known"] is False
+
+    r = client.post("/vendors/aliases", headers=W,
+                    json={"alias": new_name, "vendor_id": vid, "confirmed_by": "Rajesh V", "run_ref": "run-1"})
+    assert r.status_code == 201 and r.json()["created"]
+    found = client.get("/vendors/lookup", params={"name": new_name}, headers=R).json()
+    assert found["known"] and found["vendor_id"] == vid and found["payment_count"] == 1
+    assert found["matched_alias"] == new_name
+    assert found["vendor_name"] == "TAN CHAY YEE *** COPY *** OJC MARKETING SDN BHD"
+
+    # A payment under the alias lands in the same history, not a new vendor.
+    assert record(client, new_name, "r2")["vendor_id"] == vid
+    assert client.get("/vendors/lookup", params={"name": new_name}, headers=R).json()["payment_count"] == 2
+
+
+def test_alias_confirmation_is_idempotent_and_conflicts_are_refused(client):
+    a = record(client, "OJC MARKETING SDN BHD", "r1")["vendor_id"]
+    b = record(client, "BRIGHTLINE OFFICE SUPPLIES", "r2")["vendor_id"]
+    body = {"alias": "OJC MKTG", "vendor_id": a, "confirmed_by": "p1"}
+    assert client.post("/vendors/aliases", headers=W, json=body).status_code == 201
+    again = client.post("/vendors/aliases", headers=W, json=body)
+    assert again.status_code == 201 and again.json()["created"] is False
+    # The same alias can't be pointed at a second vendor, nor can a vendor's own name.
+    assert client.post("/vendors/aliases", headers=W, json=body | {"vendor_id": b}).status_code == 409
+    own = {"alias": "Brightline Office Supplies", "vendor_id": a, "confirmed_by": "p1"}
+    assert client.post("/vendors/aliases", headers=W, json=own).status_code == 409
+    assert client.post("/vendors/aliases", headers=W, json=body | {"vendor_id": 999}).status_code == 404
+    assert client.post("/vendors/aliases", headers=W, json=body | {"alias": "***"}).status_code == 422
+
+
+def test_alias_needs_the_write_key(client):
+    vid = record(client, "OJC MARKETING SDN BHD", "r1")["vendor_id"]
+    body = {"alias": "OJC", "vendor_id": vid, "confirmed_by": "p1"}
+    assert client.post("/vendors/aliases", headers=R, json=body).status_code == 401
+
+
+def test_search_lists_candidates_but_links_nothing(client):
+    record(client, "TAN CHAY YEE *** COPY *** OJC MARKETING SDN BHD", "r1", remit="ACCT-9")
+    record(client, "OJC MARKETING SDN BHD", "r2")
+    record(client, "BRIGHTLINE OFFICE SUPPLIES SDN BHD", "r3")  # shares only "SDN BHD"
+    hits = client.get("/vendors/search", params={"q": "TAN CHAY YEE OJC MARKETING SDN BHD"}, headers=R).json()
+    assert [h["vendor_name"] for h in hits][:2] == ["TAN CHAY YEE *** COPY *** OJC MARKETING SDN BHD",
+                                                     "OJC MARKETING SDN BHD"]
+    assert hits[0]["payment_count"] == 1 and hits[0]["last_remit_account"] == "ACCT-9"
+    assert all("BRIGHTLINE" not in h["vendor_name"] for h in hits)
+    assert client.get("/vendors/search", params={"q": "**"}, headers=R).json() == []
+    lookup = client.get("/vendors/lookup", params={"name": "TAN CHAY YEE OJC MARKETING SDN BHD"}, headers=R)
+    assert lookup.json()["known"] is False  # searching created no link

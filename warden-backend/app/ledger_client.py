@@ -1,6 +1,7 @@
 """HTTP client for warden-ledger. Two keys on purpose: the read-only lookup
 key is used by Risk Scoring; the write key is used only by Payment Execution.
-Phase 6 moves the write key into Infisical, fetched fresh per call."""
+Confirming a vendor alias is a write to the vendor master, so it uses the
+write key and happens only when a person approves. Phase 6 moves the write key into Infisical, fetched fresh per call."""
 import httpx
 
 from . import config
@@ -33,3 +34,12 @@ class LedgerClient:
                             headers={"X-API-Key": config.LEDGER_WRITE_KEY})
         r.raise_for_status()
         return r.json()
+
+    def confirm_alias(self, alias: str, vendor_id: int, confirmed_by: str, run_ref: str) -> tuple[bool, dict | str]:
+        r = self._http.post("/vendors/aliases", headers={"X-API-Key": config.LEDGER_WRITE_KEY},
+                            json={"alias": alias, "vendor_id": vendor_id, "confirmed_by": confirmed_by,
+                                  "run_ref": run_ref})
+        if r.status_code in (404, 409, 422):
+            return False, r.json()["detail"]
+        r.raise_for_status()
+        return True, r.json()

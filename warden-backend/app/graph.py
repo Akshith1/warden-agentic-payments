@@ -7,7 +7,7 @@ from .agents import Deps, approval, audit, critic, extraction, payment_execution
 from .schemas import RunState
 
 
-def human_review(state: RunState) -> dict:
+def human_review(state: RunState, deps: Deps) -> dict:
     # Durable pause: the run is checkpointed in Postgres and resumes only when
     # someone calls POST /runs/{id}/resume with Command(resume=...).
     answer = interrupt({
@@ -18,12 +18,21 @@ def human_review(state: RunState) -> dict:
         "approval": state.get("approval"),
     })
     approved = answer.get("decision") == "approve"
-    return {
+    update = {
         "human": answer,
         "status": "approved" if approved else "rejected",
         "status_reason": "" if approved else f"rejected by {answer.get('approver', 'reviewer')}",
-        "audit_trail": audit("human_review", **answer),
     }
+    details = dict(answer)
+    if approved and answer.get("same_vendor_id"):
+        # The alias was confirmed by the API before resuming; read the vendor back from
+        # the ledger so payment uses the vendor's own name and history, not the invoice's.
+        vendor = deps.ledger.lookup_vendor(state["extraction"]["vendor_name"])
+        update["vendor"] = vendor
+        details["linked_to"] = vendor["vendor_name"]
+        details["linked_payment_count"] = vendor["payment_count"]
+    update["audit_trail"] = audit("human_review", **details)
+    return update
 
 
 def mark_pending(_state: RunState) -> dict:
@@ -63,7 +72,7 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_node("approval", partial(approval.run, deps=deps))
     g.add_node("critic", partial(critic.run, deps=deps))
     g.add_node("pending_human", mark_pending)
-    g.add_node("human_review", human_review)
+    g.add_node("human_review", partial(human_review, deps=deps))
     g.add_node("payment_execution", partial(payment_execution.dry_run, deps=deps))
     g.add_node("settle", partial(payment_execution.settle, deps=deps))
 
