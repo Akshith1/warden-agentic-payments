@@ -10,3 +10,5 @@ node_modules/
 *.log
 .deepeval/
 mlruns/
+tsconfig.tsbuildinfo
+next-env.d.ts
