@@ -114,7 +114,17 @@ def health():
     with rt.pool.connection() as conn:
         conn.execute("SELECT 1")
     p = rt.deps.extraction_prompt
-    return {"status": "ok", "extraction_prompt": {"source": p.source, "version": p.version}}
+    return {
+        "status": "ok",
+        "extraction_prompt": {"source": p.source, "version": p.version},
+        "rules": {
+            "routine_amount_threshold": config.ROUTINE_AMOUNT_THRESHOLD,
+            "confidence_threshold": config.CONFIDENCE_THRESHOLD,
+            "min_prior_payments": config.MIN_PRIOR_PAYMENTS,
+            "ledger_currency": config.LEDGER_CURRENCY,
+            "settlement_hold_seconds": config.SETTLEMENT_HOLD_SECONDS,
+        },
+    }
 
 
 @app.post("/runs", status_code=202)
@@ -142,7 +152,10 @@ def get_run(run_id: str):
     snapshot = rt.graph.get_state(_config(run_id))
     if not snapshot.values:
         raise HTTPException(status_code=404, detail="unknown run")
+    with rt.pool.connection() as conn:
+        row = conn.execute("SELECT * FROM runs WHERE run_id = %s", (run_id,)).fetchone()
     return {
+        "run": row,  # service status (failed, resuming, retrying) lives here, not in the graph state
         "state": snapshot.values,
         "next": list(snapshot.next),
         "awaiting_human": [i.value for i in snapshot.interrupts],
@@ -174,3 +187,28 @@ def retry(run_id: str):
         raise HTTPException(status_code=409, detail="only a failed run can be retried")
     rt.workers.submit(_drive, run_id, None)
     return {"run_id": run_id, "status": "retrying"}
+
+
+@app.get("/inbox")
+def inbox(source: Literal["sroie", "cord"] = "sroie", split: str = "test", limit: int = 20):
+    """Real dataset receipts loaded by the data loader, for the console's submit page."""
+    with rt.pool.connection() as conn:
+        exists = conn.execute("SELECT to_regclass('invoice_inbox') AS t").fetchone()["t"]
+        if not exists:
+            return []
+        return conn.execute(
+            """SELECT external_key, source, split, left(text, 160) AS preview,
+                      ground_truth->'entities'->>'company' AS labelled_vendor,
+                      ground_truth->'entities'->>'total' AS labelled_total
+               FROM invoice_inbox WHERE source = %s AND split = %s ORDER BY id LIMIT %s""",
+            (source, split, min(limit, 200)),
+        ).fetchall()
+
+
+@app.post("/inbox/{external_key}/submit", status_code=202)
+def submit_from_inbox(external_key: str):
+    with rt.pool.connection() as conn:
+        row = conn.execute("SELECT text FROM invoice_inbox WHERE external_key = %s", (external_key,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="no such document in the inbox")
+    return submit(SubmitRequest(invoice_text=row["text"], source="dataset"))
