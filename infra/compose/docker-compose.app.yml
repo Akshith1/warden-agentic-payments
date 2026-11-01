@@ -52,3 +52,21 @@ services:
       resources:
         limits:
           memory: 1g
+
+  warden-console:
+    build: ./warden-console
+    restart: unless-stopped
+    depends_on:
+      warden-backend:
+        condition: service_healthy
+    environment:
+      BACKEND_URL: http://warden-backend:8000
+      LEDGER_URL: http://warden-ledger:8000
+      # Read-only ledger key, used by the console's server only; the browser never sees it.
+      VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
+    ports:
+      - "3100:3100"
+    deploy:
+      resources:
+        limits:
+          memory: 512m

@@ -40,7 +40,7 @@ def test_submit_queue_resume(api):
     assert any(r["run_id"] == run_id for r in api.get("/runs", params={"status": "pending_human"}).json())
 
     detail = api.get(f"/runs/{run_id}").json()
-    assert detail["next"] == ["human_review"]
+    assert detail["next"] == ["human_review"] and detail["run"]["status"] == "pending_human"
     assert "first-seen vendor" in detail["awaiting_human"][0]["escalation_reasons"]
 
     assert api.post(f"/runs/{run_id}/resume", json={"decision": "approve", "approver": "c1"}).status_code == 202
@@ -52,8 +52,9 @@ def test_submit_queue_resume(api):
 def test_unknown_run_and_validation(api):
     assert api.get("/runs/does-not-exist").status_code == 404
     assert api.post("/runs", json={"invoice_text": ""}).status_code == 422
-    assert api.get("/health").json() == {"status": "ok",
-                                         "extraction_prompt": {"source": "bundled", "version": None}}
+    health = api.get("/health").json()
+    assert health["extraction_prompt"] == {"source": "bundled", "version": None}
+    assert health["rules"]["min_prior_payments"] == 2 and health["rules"]["ledger_currency"] == "MYR"
 
 
 def test_failed_run_can_be_retried(ledger, monkeypatch):
@@ -80,3 +81,20 @@ def test_failed_run_can_be_retried(ledger, monkeypatch):
         assert api.post(f"/runs/{run_id}/retry").status_code == 202
         assert api.post(f"/runs/{run_id}/retry").status_code == 409  # already claimed
         wait_for(api, run_id, "settled")
+
+
+def test_inbox_lists_and_submits_dataset_receipts(api, ledger):
+    from app.main import rt
+    with rt.pool.connection() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS invoice_inbox (id BIGSERIAL PRIMARY KEY, source TEXT,
+                        external_key TEXT UNIQUE, split TEXT, text TEXT, ground_truth JSONB)""")
+        conn.execute("""INSERT INTO invoice_inbox (source, external_key, split, text, ground_truth)
+                        VALUES ('sroie', 'XTEST1', 'test', 'BRAND NEW LLC TOTAL 75.00',
+                                '{"entities": {"company": "BRAND NEW LLC", "total": "75.00"}}')
+                        ON CONFLICT (external_key) DO NOTHING""")
+    rows = api.get("/inbox").json()
+    assert any(r["external_key"] == "XTEST1" and r["labelled_vendor"] == "BRAND NEW LLC" for r in rows)
+    run_id = api.post("/inbox/XTEST1/submit").json()["run_id"]
+    row = wait_for(api, run_id, "pending_human")
+    assert row["source"] == "dataset"
+    assert api.post("/inbox/NOPE/submit").status_code == 404

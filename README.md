@@ -5,6 +5,7 @@
 This repository is being built in phases (see [Roadmap](#roadmap)):
 
 - **Phase 1, the agent core:** four LLM agents and a deterministic payment executor run as one LangGraph workflow, on real invoice data, with human-in-the-loop approval and a real ledger. Run live on real models; see [the phase 1 live run](docs/live-runs/2026-10-phase-1.md).
+- **Phase 3, the console:** a web app at http://localhost:3100 to submit invoices, watch each agent's step as it happens, decide escalated invoices, retry failed runs, and see the ledger and the rules in force.
 - **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried. Run live, including the first fully automatic payment; see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md).
 
 ## How a payment flows today
@@ -43,6 +44,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 
 | Service | What it is | Local URL |
 | --- | --- | --- |
+| `warden-console` | Next.js console: runs, decisions, ledger, governance | http://localhost:3100 |
 | `warden-backend` | FastAPI + LangGraph agent runtime | http://localhost:8100/docs |
 | `warden-ledger` | Double-entry ledger, vendor master, payment history | http://localhost:8101/docs |
 | `litellm` | LLM gateway with the three routes | http://localhost:4000 |
@@ -53,7 +55,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 
 ## Run it
 
-You need Docker Desktop (about 5 GB of RAM is enough through phase 2), an OpenAI API key and a Groq API key.
+You need Docker Desktop (about 5 GB of RAM is enough through phase 3), an OpenAI API key and a Groq API key.
 
 On Windows PowerShell, use `.\infra\scripts\compose.ps1` wherever this README says `sh infra/scripts/compose.sh`; the arguments are the same.
 
@@ -107,6 +109,20 @@ If a run stops on a provider error (an exhausted API credit, a rate limit), it s
 ```sh
 curl -s -X POST localhost:8100/runs/<run_id>/retry
 ```
+
+## The console (phase 3)
+
+Open http://localhost:3100 once the stack is up.
+
+| Page | What you do there |
+| --- | --- |
+| Runs | Every invoice, newest first, refreshing by itself. A banner and a count show how many need your decision. |
+| A run | The invoice as the agents read it, the trail of each agent's step with timings, and the outcome stamp. Approve or reject an escalated invoice; retry one that failed on a provider error. |
+| Submit invoice | Paste invoice text, or submit one of the loaded SROIE receipts. |
+| Ledger | Account balances and recent double-entry postings. |
+| Governance | The Extraction prompt version in use and the rules enforced in code, read from the running backend. |
+
+The browser only talks to the console's own server, which relays a fixed list of backend endpoints and read-only ledger endpoints; the ledger key stays on the server, and the console cannot write to the ledger. Pages refresh by polling every 1.5 to 5 seconds rather than over a WebSocket, which is enough for runs that change every few seconds. The approver's name is typed in until phase 6 adds Keycloak logins.
 
 ## Prompt promotion gate (phase 2)
 
@@ -180,7 +196,7 @@ These are deliberate and each one is removed by a named later phase.
 | --- | --- | --- |
 | 1 | Agent core (done) | 01 |
 | 2 | MLflow prompt registry, DeepEval gate, vendor trust loop (done) | 04, 05, 21 |
-| 3 | Next.js console: submit, live run view, approval queue | 01 from the browser |
+| 3 | Next.js console: submit, live run view, approval queue (done) | 01 from the browser |
 | 4 | Cedar policies, temporal rate limit, capability manifests | 06, 07, 09, 10, 23 |
 | 5 | Guardrail model, sandboxed OCR (Landlock), confidence gate, dry run, hold | 08, 11, 16, 17, 18 |
 | 6 | Keycloak, SPIRE, Infisical | 02, 20 |
