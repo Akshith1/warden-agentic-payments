@@ -52,6 +52,10 @@ def after_human(state: RunState) -> str:
     return "payment_execution" if state["status"] == "approved" else "end"
 
 
+def after_dry_run(state: RunState) -> str:
+    return "settle" if state["status"] == "settling" else "end"
+
+
 def build_graph(deps: Deps, checkpointer=None):
     g = StateGraph(RunState)
     g.add_node("extraction", partial(extraction.run, deps=deps))
@@ -60,7 +64,8 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_node("critic", partial(critic.run, deps=deps))
     g.add_node("pending_human", mark_pending)
     g.add_node("human_review", human_review)
-    g.add_node("payment_execution", partial(payment_execution.run, deps=deps))
+    g.add_node("payment_execution", partial(payment_execution.dry_run, deps=deps))
+    g.add_node("settle", partial(payment_execution.settle, deps=deps))
 
     g.set_entry_point("extraction")
     g.add_conditional_edges("extraction", after_extraction, {"risk_scoring": "risk_scoring", "end": END})
@@ -71,5 +76,6 @@ def build_graph(deps: Deps, checkpointer=None):
                             {"payment_execution": "payment_execution", "pending_human": "pending_human"})
     g.add_edge("pending_human", "human_review")
     g.add_conditional_edges("human_review", after_human, {"payment_execution": "payment_execution", "end": END})
-    g.add_edge("payment_execution", END)
+    g.add_conditional_edges("payment_execution", after_dry_run, {"settle": "settle", "end": END})
+    g.add_edge("settle", END)
     return g.compile(checkpointer=checkpointer)
