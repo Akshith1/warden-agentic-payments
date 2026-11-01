@@ -18,7 +18,11 @@ export function clock(iso: string): string {
 
 export function seconds(from: string, to: string): string {
   const s = (new Date(to).getTime() - new Date(from).getTime()) / 1000;
-  return `${s.toFixed(s < 10 ? 1 : 0)} s`;
+  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)} s`;
+  // Waits for a human run to minutes or hours; say so in units a person reads at a glance.
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ${Math.round(s % 60)} s`;
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
 // The backend's reasons are precise for engineers; the console says what they mean.
