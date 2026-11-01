@@ -23,6 +23,11 @@ def run(state: RunState, deps: Deps) -> dict:
     reasons = []
     if not vendor["known"]:
         reasons.append("first-seen vendor")
+    elif vendor["payment_count"] < config.MIN_PRIOR_PAYMENTS:
+        reasons.append(f"limited history: {vendor['payment_count']} prior payment(s), "
+                       f"auto-approval needs {config.MIN_PRIOR_PAYMENTS}")
+    if ext["currency"] != config.LEDGER_CURRENCY:
+        reasons.append(f"currency {ext['currency']} differs from ledger currency {config.LEDGER_CURRENCY}")
     if risk.risk_level == "high":
         reasons.append(f"high risk score {risk.risk_score:.2f}")
     last, new = _account_key(vendor.get("last_remit_account")), _account_key(ext.get("remit_to_account"))

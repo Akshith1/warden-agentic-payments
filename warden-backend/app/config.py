@@ -17,6 +17,16 @@ LINE_ITEM_TOLERANCE = float(os.environ.get("LINE_ITEM_TOLERANCE", "0.01"))
 SETTLEMENT_HOLD_SECONDS = int(os.environ.get("SETTLEMENT_HOLD_SECONDS", "20"))
 LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))
 
+# Business rules the phase 1 live run showed must be explicit, not left to model judgment.
+# A document that prints no currency is taken to be in the ledger's currency; any other
+# currency is escalated, because the ledger does not convert.
+LEDGER_CURRENCY = os.environ.get("LEDGER_CURRENCY", "MYR").upper()
+# Auto-approval needs this many settled payments to the vendor; fewer goes to a human.
+MIN_PRIOR_PAYMENTS = int(os.environ.get("MIN_PRIOR_PAYMENTS", "2"))
+
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "")
+EXTRACTION_PROMPT_NAME = os.environ.get("EXTRACTION_PROMPT_NAME", "warden-extraction")
+
 CASH_ACCOUNT = "1000-operating-cash"
 EXPENSE_ACCOUNT = "5000-vendor-expense"
 
