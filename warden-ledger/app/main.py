@@ -7,7 +7,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 
 from . import db
 from .ledger import apply_transaction
-from .models import Posting, RecordPaymentRequest, TransactionRequest, ValidationResult, VendorLookup
+from .models import (AliasRequest, Posting, RecordPaymentRequest, TransactionRequest, ValidationResult,
+                     VendorCandidate, VendorLookup)
 
 WRITE_KEY = os.environ["LEDGER_WRITE_KEY"]
 LOOKUP_KEY = os.environ["VENDOR_LOOKUP_KEY"]
@@ -95,10 +96,7 @@ def transactions(limit: int = 50):
 @app.get("/vendors/lookup", response_model=VendorLookup, dependencies=[Depends(require_read)])
 def vendor_lookup(name: str):
     with db.connect() as conn:
-        vendor = conn.execute(
-            "SELECT id, display_name, first_seen FROM vendors WHERE normalized_name = %s",
-            (db.normalize_vendor(name),),
-        ).fetchone()
+        vendor = db.resolve_vendor(conn, name)
         if not vendor:
             return VendorLookup(known=False, vendor_name=name)
         stats = conn.execute(
@@ -114,6 +112,8 @@ def vendor_lookup(name: str):
         return VendorLookup(
             known=True,
             vendor_name=vendor["display_name"],
+            vendor_id=vendor["id"],
+            matched_alias=vendor["matched_alias"],
             first_seen=vendor["first_seen"],
             payment_count=stats["n"],
             average_amount=round(stats["avg"], 2) if stats["avg"] is not None else None,
@@ -125,7 +125,8 @@ def vendor_lookup(name: str):
 @app.post("/vendors/record-payment", dependencies=[Depends(require_write)])
 def record_payment(req: RecordPaymentRequest):
     with db.connect() as conn:
-        vendor_id = upsert_vendor(conn, req.vendor_name, req.paid_on)
+        known = db.resolve_vendor(conn, req.vendor_name)  # a confirmed alias pays into the vendor's history
+        vendor_id = known["id"] if known else upsert_vendor(conn, req.vendor_name, req.paid_on)
         inserted = conn.execute(
             """INSERT INTO historical_payments (vendor_id, amount, paid_on, source, external_ref, remit_account)
                VALUES (%s, %s, %s, 'warden', %s, %s) ON CONFLICT (external_ref) DO NOTHING RETURNING id""",
@@ -133,6 +134,65 @@ def record_payment(req: RecordPaymentRequest):
         ).fetchone()
         conn.commit()
     return {"vendor_id": vendor_id, "recorded": inserted is not None}
+
+
+# Words almost every vendor shares; matching on them alone lists unrelated vendors.
+COMPANY_FORMS = {"SDN", "BHD", "LLC", "INC", "LTD", "LIMITED", "CORP", "CORPORATION", "COMPANY", "PTE", "PLC",
+                 "THE", "AND", "ENTERPRISE", "ENTERPRISES", "TRADING", "SERVICES", "GROUP"}
+
+
+@app.get("/vendors/search", response_model=list[VendorCandidate], dependencies=[Depends(require_read)])
+def vendor_search(q: str, limit: int = 8):
+    """Candidates for a person to choose from. This only lists; it never links
+    anything, so a loose match here can't move money on its own."""
+    words = [w for w in db.normalize_vendor(q).split() if len(w) >= 3 and w not in COMPANY_FORMS][:8]
+    if not words:
+        return []
+    patterns = [f"%{w}%" for w in words]
+    with db.connect() as conn:
+        rows = conn.execute(
+            """WITH names AS (
+                   SELECT id AS vendor_id, normalized_name AS name FROM vendors
+                   UNION ALL SELECT vendor_id, normalized_alias FROM vendor_aliases),
+               scored AS (
+                   SELECT vendor_id, max((SELECT count(*) FROM unnest(%s::text[]) p WHERE name LIKE p)) AS hits
+                   FROM names GROUP BY vendor_id)
+               SELECT v.id AS vendor_id, v.display_name AS vendor_name,
+                      (SELECT count(*) FROM historical_payments h WHERE h.vendor_id = v.id) AS payment_count,
+                      (SELECT h.remit_account FROM historical_payments h WHERE h.vendor_id = v.id
+                         AND h.remit_account IS NOT NULL ORDER BY paid_on DESC, id DESC LIMIT 1) AS last_remit_account,
+                      COALESCE((SELECT array_agg(display_alias ORDER BY confirmed_at) FROM vendor_aliases a
+                                WHERE a.vendor_id = v.id), '{}') AS aliases
+               FROM scored s JOIN vendors v ON v.id = s.vendor_id
+               WHERE s.hits > 0 ORDER BY s.hits DESC, payment_count DESC, v.display_name LIMIT %s""",
+            (patterns, min(limit, 25)),
+        ).fetchall()
+    return rows
+
+
+@app.post("/vendors/aliases", status_code=201, dependencies=[Depends(require_write)])
+def confirm_alias(req: AliasRequest):
+    """Records that a person confirmed `alias` is another name for an existing
+    vendor. Repeating the same confirmation is harmless; a conflicting one is 409."""
+    key = db.normalize_vendor(req.alias)
+    if not key:
+        raise HTTPException(status_code=422, detail="alias has no letters or digits")
+    with db.connect() as conn:
+        target = conn.execute("SELECT id, display_name FROM vendors WHERE id = %s", (req.vendor_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="no such vendor")
+        existing = db.resolve_vendor(conn, req.alias)
+        if existing and existing["id"] != req.vendor_id:
+            raise HTTPException(status_code=409, detail=f"'{req.alias}' already belongs to {existing['display_name']}")
+        if existing:
+            return {"vendor_id": req.vendor_id, "vendor_name": target["display_name"], "created": False}
+        conn.execute(
+            """INSERT INTO vendor_aliases (normalized_alias, vendor_id, display_alias, confirmed_by, run_ref)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (key, req.vendor_id, req.alias.strip(), req.confirmed_by.strip(), req.run_ref),
+        )
+        conn.commit()
+    return {"vendor_id": req.vendor_id, "vendor_name": target["display_name"], "created": True}
 
 
 def upsert_vendor(conn, name: str, seen_on) -> int:
