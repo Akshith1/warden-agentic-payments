@@ -2,8 +2,9 @@ import { LEDGER_URL, VENDOR_LOOKUP_KEY, relay } from "@/lib/upstream";
 
 type Ctx = { params: Promise<{ path: string[] }> };
 
-// Read-only views of the ledger. The console never holds the ledger's write key.
-const ALLOWED = [/^accounts$/, /^transactions$/, /^vendors\/lookup$/];
+// Read-only views of the ledger. The console never holds the ledger's write key:
+// linking a vendor alias goes through the backend's resume endpoint, never from here.
+const ALLOWED = [/^accounts$/, /^transactions$/, /^vendors\/lookup$/, /^vendors\/search$/];
 
 export async function GET(req: Request, { params }: Ctx) {
   const joined = (await params).path.join("/");
