@@ -1,0 +1,8 @@
+{
+  "agent": "human-review",
+  "purpose": "Acts for the person approving: reads the vendor and records a vendor link they confirmed.",
+  "allowed_actions": [
+    "LookupVendor",
+    "ConfirmVendorAlias"
+  ]
+}

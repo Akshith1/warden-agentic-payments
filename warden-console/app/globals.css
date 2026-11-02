@@ -192,7 +192,17 @@ table.lines { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
 .rules div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.7rem 1rem; border-bottom: 1px solid var(--rule); }
 .rules div:last-child { border-bottom: 0; }
 .rules dt { color: var(--steel); }
-.rules dd { margin: 0; font-weight: 700; }
+.rules dd { margin: 0; font-weight: 700; text-align: right; }
+.policy-table { max-width: 60rem; margin-bottom: 0.5rem; }
+.policy-table td:first-child { width: 40%; }
+.policy-table code { font-size: var(--step--1); overflow-wrap: anywhere; }
+.effect-forbid { color: var(--stopped); font-weight: 600; }
+.effect-permit { color: var(--paid); font-weight: 600; }
+@media (max-width: 40rem) {
+  .rules div { flex-direction: column; gap: 0.15rem; }
+  .rules dd { text-align: left; }
+  .policy-table td:first-child { width: auto; }
+}
 
 @media (max-width: 860px) {
   .shell { grid-template-columns: 1fr; }

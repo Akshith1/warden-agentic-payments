@@ -100,7 +100,9 @@ def vendor_lookup(name: str):
         if not vendor:
             return VendorLookup(known=False, vendor_name=name)
         stats = conn.execute(
-            "SELECT count(*) AS n, avg(amount) AS avg FROM historical_payments WHERE vendor_id = %s",
+            "SELECT count(*) AS n, avg(amount) AS avg, "
+            "count(*) FILTER (WHERE recorded_at > now() - interval '24 hours') AS recent "
+            "FROM historical_payments WHERE vendor_id = %s",
             (vendor["id"],),
         ).fetchone()
         recent = conn.execute(
@@ -119,6 +121,7 @@ def vendor_lookup(name: str):
             average_amount=round(stats["avg"], 2) if stats["avg"] is not None else None,
             recent_amounts=[r["amount"] for r in recent],
             last_remit_account=last_remit,
+            payments_last_24h=stats["recent"],
         )
 
 
@@ -128,9 +131,13 @@ def record_payment(req: RecordPaymentRequest):
         known = db.resolve_vendor(conn, req.vendor_name)  # a confirmed alias pays into the vendor's history
         vendor_id = known["id"] if known else upsert_vendor(conn, req.vendor_name, req.paid_on)
         inserted = conn.execute(
-            """INSERT INTO historical_payments (vendor_id, amount, paid_on, source, external_ref, remit_account)
-               VALUES (%s, %s, %s, 'warden', %s, %s) ON CONFLICT (external_ref) DO NOTHING RETURNING id""",
-            (vendor_id, req.amount, req.paid_on, req.external_ref, req.remit_account),
+            # A payment dated today is recent now; a backdated one counts at its own date.
+            """INSERT INTO historical_payments (vendor_id, amount, paid_on, source, external_ref, remit_account,
+                                                recorded_at)
+               VALUES (%s, %s, %s, 'warden', %s, %s,
+                       CASE WHEN %s::date >= current_date THEN now() ELSE %s::date::timestamptz END)
+               ON CONFLICT (external_ref) DO NOTHING RETURNING id""",
+            (vendor_id, req.amount, req.paid_on, req.external_ref, req.remit_account, req.paid_on, req.paid_on),
         ).fetchone()
         conn.commit()
     return {"vendor_id": vendor_id, "recorded": inserted is not None}

@@ -1,0 +1,5 @@
+{
+  "agent": "extraction",
+  "purpose": "Reads the invoice text. Touches nothing else.",
+  "allowed_actions": []
+}

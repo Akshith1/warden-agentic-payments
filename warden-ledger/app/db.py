@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS vendor_aliases (
     run_ref           TEXT,
     confirmed_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- When a payment was recorded, for the policy service's rolling 24-hour count.
+-- Nullable on purpose: rows from before phase 4 and bulk-loaded history are not "recent".
+ALTER TABLE historical_payments ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS historical_payments_vendor_idx ON historical_payments (vendor_id, paid_on DESC);
 """
 

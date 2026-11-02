@@ -10,11 +10,16 @@ def _account_key(value: str | None) -> str:
     return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
 
 
+def remit_changed(vendor: dict, ext: dict) -> bool:
+    last, new = _account_key(vendor.get("last_remit_account")), _account_key(ext.get("remit_to_account"))
+    return bool(last and new and last != new)
+
+
 def run(state: RunState, deps: Deps) -> dict:
     ext = state["extraction"]
     # Vendor facts come from the ledger, never from the invoice or the model:
     # a self-reported "known vendor" flag would let anyone skip the first-seen rule.
-    vendor = deps.ledger.lookup_vendor(ext["vendor_name"])
+    vendor = deps.ledger_for("risk-scoring").lookup_vendor(ext["vendor_name"])
 
     route = config.ROUTE_REASONING if ext["total_amount"] > config.ROUTINE_AMOUNT_THRESHOLD else config.ROUTE_ROUTINE
     evidence = json.dumps({"invoice": ext, "vendor_history": vendor}, default=str, indent=2)
@@ -30,8 +35,7 @@ def run(state: RunState, deps: Deps) -> dict:
         reasons.append(f"currency {ext['currency']} differs from ledger currency {config.LEDGER_CURRENCY}")
     if risk.risk_level == "high":
         reasons.append(f"high risk score {risk.risk_score:.2f}")
-    last, new = _account_key(vendor.get("last_remit_account")), _account_key(ext.get("remit_to_account"))
-    if last and new and last != new:
+    if remit_changed(vendor, ext):
         reasons.append("remit-to account differs from the vendor's last settled payment")
 
     return {

@@ -138,3 +138,11 @@ def test_a_known_vendor_cannot_be_relinked(ledger, monkeypatch):
         other = ledger.lookup_vendor("Other Vendor")["vendor_id"]
         r = api.post(f"/runs/{run_id}/resume", json={"decision": "approve", "approver": "c1", "same_vendor_id": other})
         assert r.status_code == 409 and "only a first-seen vendor" in r.json()["detail"]
+
+
+def test_policies_lists_cedar_rules_and_capability_manifests(api):
+    body = api.get("/policies").json()
+    ids = {r["id"] for r in body["cedar"]["rules"]}
+    assert {"agents-vendor-rate-limit", "only-write-tier-writes-ledger"} <= ids
+    writers = [m["agent"] for m in body["capabilities"] if "CreateLedgerEntry" in m["allowed_actions"]]
+    assert writers == ["payment-execution"]

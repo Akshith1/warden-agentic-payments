@@ -35,9 +35,21 @@ def _transaction(state: RunState) -> dict:
     }
 
 
+AGENT = "payment-execution"
+
+
 def dry_run(state: RunState, deps: Deps) -> dict:
     txn = _transaction(state)
-    check = deps.ledger.dry_run(txn)
+    ext = state["extraction"]
+    # Lock 1 of 2: Cedar, in the policy service. Lock 2 is the capability manifest,
+    # checked by ledger_for() before each ledger call below.
+    grant = deps.policy.authorize(("Agent", AGENT), "CreateLedgerEntry", payment={
+        "amount": txn["postings"][0]["amount"], "currency": ext.get("currency") or "", "vendor": ext["vendor_name"]})
+    if grant["decision"] != "Allow":
+        reason = "; ".join(grant["reasons"])
+        return {"status": "blocked", "status_reason": f"policy refused the ledger write: {reason}",
+                "audit_trail": audit("dry_run", valid=False, errors=[reason], rules=grant["policies"])}
+    check = deps.ledger_for(AGENT).dry_run(txn)
     if not check["valid"]:
         return {"status": "blocked", "status_reason": "dry run failed: " + "; ".join(check["errors"]),
                 "payment": {"dry_run": check}, "audit_trail": audit("dry_run", valid=False, errors=check["errors"])}
@@ -50,14 +62,15 @@ def settle(state: RunState, deps: Deps) -> dict:
     deps.sleep(config.SETTLEMENT_HOLD_SECONDS)  # phase 9 re-checks the kill switch here, right before commit
 
     txn = _transaction(state)
-    ok, result = deps.ledger.commit(txn)
+    ledger = deps.ledger_for(AGENT)
+    ok, result = ledger.commit(txn)
     if not ok:
         return {"status": "blocked", "status_reason": "commit refused: " + "; ".join(result),
                 "audit_trail": trail + audit("commit", ok=False, errors=result)}
 
     # Vendor history is written only after a real settlement, so trust is earned from the ledger.
     ext = state["extraction"]
-    deps.ledger.record_payment({
+    ledger.record_payment({
         "vendor_name": ext["vendor_name"], "amount": txn["postings"][0]["amount"],
         "paid_on": date.today().isoformat(), "external_ref": txn["idempotency_key"],
         "remit_account": ext.get("remit_to_account"),

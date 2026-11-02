@@ -132,6 +132,13 @@ function Step({ entry, previous }: { entry: TrailEntry; previous?: TrailEntry })
       detail = `${e.decision === "approve" ? "Approved" : "Rejected"} by ${e.approver}${e.note ? `: ${e.note}` : ""}${
         e.linked_to ? `. Confirmed as ${e.linked_to}, which has ${e.linked_payment_count} earlier payment(s)` : ""}`;
       break;
+    case "policy": {
+      const who = String(e.principal ?? "").startsWith("User:") ? String(e.principal).slice(5) : "the agents";
+      detail = e.decision === "Allow"
+        ? `Allowed for ${who} (${(e.rules as string[]).join(", ")})`
+        : `Refused for ${who}: ${(e.reasons as string[]).join("; ")}`;
+      break;
+    }
     case "dry_run":
       detail = e.valid ? "Would balance; nothing written" : `Refused: ${(e.errors as string[]).join("; ")}`;
       break;

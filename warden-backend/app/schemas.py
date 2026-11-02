@@ -63,6 +63,7 @@ class RunState(TypedDict, total=False):
     risk: dict
     approval: dict
     critic: dict
+    policy: dict
     escalation_reasons: list[str]
     human: dict
     payment: dict
