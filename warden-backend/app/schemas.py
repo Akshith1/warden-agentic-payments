@@ -66,6 +66,8 @@ class RunState(TypedDict, total=False):
     image_base64: str | None  # a scanned invoice, cleared once the OCR step has read it
     source: str
     submitted_by: str  # username from the submitter's verified login (phase 6)
+    masked_text: str   # what the models see: personal data replaced by placeholders (phase 7)
+    pii_mapping: dict  # placeholder -> real value; never sent to a model
     guardrail: dict
     status: Status
     status_reason: str

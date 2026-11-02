@@ -1,6 +1,7 @@
 import json
 
 from .. import config
+from ..privacy import shield
 from ..schemas import ApprovalDecision, RunState
 from . import Deps, audit, prompt
 
@@ -21,8 +22,9 @@ def rules_context() -> dict:
 
 def run(state: RunState, deps: Deps) -> dict:
     ext = state["extraction"]
-    evidence = json.dumps({"invoice": ext, "vendor_history": state["vendor"], "risk": state["risk"],
-                           "rules_already_enforced": rules_context()}, default=str, indent=2)
+    evidence = json.dumps(shield({"invoice": ext, "vendor_history": state["vendor"], "risk": state["risk"],
+                                  "rules_already_enforced": rules_context()}, state.get("pii_mapping") or {}),
+                          default=str, indent=2)
     decision = deps.llm("approval", config.ROUTE_REASONING, prompt("approval"), evidence, ApprovalDecision)
 
     trail = audit("approval", decision=decision.decision, confidence=decision.confidence)

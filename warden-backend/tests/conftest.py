@@ -9,10 +9,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-LEDGER_PORT, POLICY_PORT, CONTROL_PORT = 18001, 18002, 18003
+LEDGER_PORT, POLICY_PORT, CONTROL_PORT, PII_PORT = 18001, 18002, 18003, 18004
 os.environ.update({"LEDGER_WRITE_KEY": "t-write", "VENDOR_LOOKUP_KEY": "t-read", "OPENING_CASH": "10000.00",
                    "POLICY_URL": f"http://127.0.0.1:{POLICY_PORT}",
-                   "CONTROL_URL": f"http://127.0.0.1:{CONTROL_PORT}"})
+                   "CONTROL_URL": f"http://127.0.0.1:{CONTROL_PORT}",
+                   "PII_URL": f"http://127.0.0.1:{PII_PORT}"})
 
 from langgraph.checkpoint.postgres import PostgresSaver  # noqa: E402
 from psycopg.rows import dict_row  # noqa: E402
@@ -87,6 +88,43 @@ def switch(control_url):
     s.reset()
     yield s
     s.reset()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def pii_url():
+    """A stand-in for warden-pii with the same contract: emails, 'Cashier: NAME' and bank accounts
+    after 'account'. Presidio itself is tested in warden-pii."""
+    import json
+    import re
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    rules = [("EMAIL_ADDRESS", r"[\w.+-]+@[\w-]+\.[\w.]+"), ("PERSON", r"(?<=Cashier: )[A-Z][A-Za-z ]+[A-Za-z]"),
+             ("BANK_ACCOUNT", r"(?<=account )\d[\d-]{6,}\d")]
+
+    class Mask(BaseHTTPRequestHandler):
+        def do_POST(self):
+            text = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["text"]
+            mapping, counts = {}, {}
+            for kind, pattern in rules:
+                for value in dict.fromkeys(re.findall(pattern, text)):
+                    counts[kind] = counts.get(kind, 0) + 1
+                    token = f"<{kind}_{counts[kind]}>"
+                    mapping[token] = value
+                    text = text.replace(value, token)
+            body = json.dumps({"masked": text, "mapping": mapping, "counts": counts}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", PII_PORT), Mask)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{PII_PORT}"
+    server.shutdown()
 
 
 @pytest.fixture(scope="session", autouse=True)

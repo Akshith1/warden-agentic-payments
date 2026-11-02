@@ -28,6 +28,7 @@ export type RunDetail = {
   state: {
     run_id: string;
     invoice_text: string;
+    masked_text?: string;
     status: string;
     status_reason?: string;
     extraction?: Extraction;

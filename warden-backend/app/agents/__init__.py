@@ -10,6 +10,7 @@ from ..capability import GuardedLedger
 from ..control_client import ControlClient
 from ..ledger_client import LedgerClient
 from ..ocr_client import OcrClient
+from ..pii_client import PiiClient
 from ..policy_client import PolicyClient
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
@@ -35,6 +36,7 @@ class Deps:
     extraction_prompt: LoadedPrompt = field(default_factory=bundled)
     policy: PolicyClient = field(default_factory=PolicyClient)
     ocr: OcrClient = field(default_factory=OcrClient)
+    pii: PiiClient = field(default_factory=PiiClient)
     control: ControlClient = field(default_factory=ControlClient)
 
     def ledger_for(self, agent: str) -> GuardedLedger:

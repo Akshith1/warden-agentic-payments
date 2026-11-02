@@ -48,7 +48,7 @@ def rule_hits(text: str) -> list[dict]:
 
 
 def run(state: RunState, deps: Deps) -> dict:
-    text = state["invoice_text"]
+    text = state.get("masked_text") or state["invoice_text"]  # the safety model sees no personal data
     hits = rule_hits(text)
     verdict = deps.llm("guardrail", config.ROUTE_GUARDRAIL, prompt("guardrail"), text, GuardrailVerdict)
 
