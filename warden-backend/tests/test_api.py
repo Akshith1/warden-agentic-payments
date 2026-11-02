@@ -44,6 +44,7 @@ def test_submit_queue_resume(api):
     run_id = api.post("/runs", json={"invoice_text": "ACME invoice ..."}).json()["run_id"]
     row = wait_for(api, run_id, "pending_human")
     assert row["vendor_name"] == "Brand New LLC" and float(row["total_amount"]) == 75.0
+    assert row["status_reason"] == "first-seen vendor"  # shown in the Runs list's Why column
     assert any(r["run_id"] == run_id for r in api.get("/runs", params={"status": "pending_human"}).json())
 
     detail = api.get(f"/runs/{run_id}").json()
