@@ -20,12 +20,16 @@ def rules_context() -> dict:
     }
 
 
+def decide(deps: Deps, ext: dict, vendor: dict, risk: dict, pii_mapping: dict) -> ApprovalDecision:
+    """The model's part of approval, on its own for the consistency check (phase 9b)."""
+    evidence = json.dumps(shield({"invoice": ext, "vendor_history": vendor, "risk": risk,
+                                  "rules_already_enforced": rules_context()}, pii_mapping), default=str, indent=2)
+    return deps.llm("approval", config.ROUTE_REASONING, prompt("approval"), evidence, ApprovalDecision)
+
+
 def run(state: RunState, deps: Deps) -> dict:
     ext = state["extraction"]
-    evidence = json.dumps(shield({"invoice": ext, "vendor_history": state["vendor"], "risk": state["risk"],
-                                  "rules_already_enforced": rules_context()}, state.get("pii_mapping") or {}),
-                          default=str, indent=2)
-    decision = deps.llm("approval", config.ROUTE_REASONING, prompt("approval"), evidence, ApprovalDecision)
+    decision = decide(deps, ext, state["vendor"], state["risk"], state.get("pii_mapping") or {})
 
     trail = audit("approval", decision=decision.decision, confidence=decision.confidence)
     if decision.decision == "reject":

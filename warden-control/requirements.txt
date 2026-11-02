@@ -4,3 +4,10 @@ uvicorn[standard]==0.54.0
 pydantic==2.14.1
 pyjwt[crypto]==2.15.0
 pyyaml==6.0.3
+
+# Phase 9b: traces and request metrics via auto-instrumentation (the Dockerfile starts uvicorn
+# through opentelemetry-instrument; Compose points it at Grafana's collector).
+opentelemetry-distro==0.66b2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+opentelemetry-instrumentation-sqlite3==0.66b2
