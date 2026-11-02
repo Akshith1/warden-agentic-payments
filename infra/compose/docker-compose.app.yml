@@ -60,7 +60,6 @@ services:
     tmpfs:
       - /work:size=64m,uid=10001,gid=10001,mode=0700
       - /tmp:size=16m,uid=10001,gid=10001,mode=0700
-    pids_limit: 64
     environment:
       OCR_WORK_DIR: /work
     deploy:
@@ -68,6 +67,7 @@ services:
         limits:
           memory: 1536m
           cpus: "1.0"
+          pids: 64
 
   warden-backend:
     build: ./warden-backend
