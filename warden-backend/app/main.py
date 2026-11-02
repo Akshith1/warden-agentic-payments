@@ -111,7 +111,7 @@ def _sync(run_id: str, values: dict) -> None:
 
 
 # Who acted at each step, for the audit log's "who" column.
-STEP_ACTOR = {"ocr": "ocr-sandbox", "guardrail": "guardrail", "extraction": "extraction", "risk_scoring": "risk-scoring",
+STEP_ACTOR = {"ocr": "ocr-sandbox", "privacy": "pii-masking", "guardrail": "guardrail", "extraction": "extraction", "risk_scoring": "risk-scoring",
               "approval": "approval", "critic": "critic", "dry_run": "payment-execution",
               "settlement_hold": "payment-execution", "commit": "payment-execution"}
 
@@ -249,7 +249,8 @@ def get_run(run_id: str):
         row = conn.execute("SELECT * FROM runs WHERE run_id = %s", (run_id,)).fetchone()
     return {
         "run": row,  # service status (failed, resuming, retrying) lives here, not in the graph state
-        "state": {k: v for k, v in snapshot.values.items() if k != "image_base64"},
+        # The image and the placeholder mapping stay in the backend; masked_text is "what the models saw".
+        "state": {k: v for k, v in snapshot.values.items() if k not in ("image_base64", "pii_mapping")},
         "next": list(snapshot.next),
         "awaiting_human": [i.value for i in snapshot.interrupts],
     }

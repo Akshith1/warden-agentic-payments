@@ -4,7 +4,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
 from .agents import (Deps, approval, audit, critic, extraction, guardrail, ocr, payment_execution, policy_check,
-                     risk_scoring)
+                     privacy, risk_scoring)
 from .schemas import RunState
 
 
@@ -42,11 +42,11 @@ def mark_pending(state: RunState) -> dict:
 
 
 def start(state: RunState) -> str:
-    return "ocr" if state.get("image_base64") else "guardrail"
+    return "ocr" if state.get("image_base64") else "privacy"
 
 
 def after_ocr(state: RunState) -> str:
-    return "end" if state.get("status") == "blocked" else "guardrail"
+    return "end" if state.get("status") == "blocked" else "privacy"
 
 
 def after_guardrail(state: RunState) -> str:
@@ -88,6 +88,7 @@ def after_dry_run(state: RunState) -> str:
 def build_graph(deps: Deps, checkpointer=None):
     g = StateGraph(RunState)
     g.add_node("ocr", partial(ocr.run, deps=deps))
+    g.add_node("privacy", partial(privacy.run, deps=deps))
     g.add_node("guardrail", partial(guardrail.run, deps=deps))
     g.add_node("extraction", partial(extraction.run, deps=deps))
     g.add_node("risk_scoring", partial(risk_scoring.run, deps=deps))
@@ -99,8 +100,9 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_node("payment_execution", partial(payment_execution.dry_run, deps=deps))
     g.add_node("settle", partial(payment_execution.settle, deps=deps))
 
-    g.set_conditional_entry_point(start, {"ocr": "ocr", "guardrail": "guardrail"})
-    g.add_conditional_edges("ocr", after_ocr, {"guardrail": "guardrail", "end": END})
+    g.set_conditional_entry_point(start, {"ocr": "ocr", "privacy": "privacy"})
+    g.add_conditional_edges("ocr", after_ocr, {"privacy": "privacy", "end": END})
+    g.add_edge("privacy", "guardrail")
     g.add_conditional_edges("guardrail", after_guardrail, {"extraction": "extraction", "end": END})
     g.add_conditional_edges("extraction", after_extraction, {"risk_scoring": "risk_scoring", "end": END})
     g.add_conditional_edges("risk_scoring", after_risk, {"approval": "approval", "pending_human": "pending_human"})

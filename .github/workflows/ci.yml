@@ -74,6 +74,17 @@ jobs:
         working-directory: warden-control
         run: pytest -q
 
+  pii:
+    name: Personal-data masking (Presidio)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
+      - run: pip install -r warden-pii/requirements.txt -r warden-pii/requirements-dev.txt
+      - working-directory: warden-pii
+        run: pytest -q
+
   backend:
     name: Agents, graph and API
     runs-on: ubuntu-24.04

@@ -242,6 +242,6 @@ def test_stopped_run_fails_with_the_reason_then_retries_and_every_step_is_on_the
                         "ORDER BY seq", (run_id,)).fetchall()
     steps = [e[2] for e in events if e[0] == "run_step"]
     assert events[0][:2] == ("run_submitted", "clerk")
-    assert steps == ["guardrail", "extraction", "risk_scoring", "approval", "critic", "policy", "dry_run",
+    assert steps == ["privacy", "guardrail", "extraction", "risk_scoring", "approval", "critic", "policy", "dry_run",
                      "settlement_hold", "commit"]  # each once, in order, despite two stops and retries
     assert [e[0] for e in events].count("run_stopped") == 2

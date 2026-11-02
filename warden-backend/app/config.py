@@ -25,6 +25,9 @@ KEYCLOAK_JWKS_URL = os.environ.get("KEYCLOAK_JWKS_URL",
                                    "http://keycloak:8080/realms/warden/protocol/openid-connect/certs")
 TOKEN_AUDIENCE = os.environ.get("TOKEN_AUDIENCE", "warden-backend")
 
+# Phase 7: personal data is masked by warden-pii before any model reads a document.
+PII_URL = os.environ.get("PII_URL", "http://warden-pii:8000")
+
 # Phase 9: the kill switch and the hash-chained audit log.
 CONTROL_URL = os.environ.get("CONTROL_URL", "http://warden-control:8000")
 
