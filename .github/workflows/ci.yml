@@ -21,8 +21,8 @@ jobs:
     name: Cedar policies (scenarios 06 and 07)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
       - run: pip install -r warden-policy/requirements.txt -r warden-policy/requirements-dev.txt
       - name: The policies in this commit are accepted
@@ -52,8 +52,8 @@ jobs:
       PGPASS_LITELLM: ci-litellm
       PGPASS_MLFLOW: ci-mlflow
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
       - name: Create the service databases with the same script Compose uses
         run: sh infra/postgres-init/01-create-service-databases.sh
@@ -61,7 +61,7 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends tesseract-ocr tesseract-ocr-eng
       - run: |
           pip install -r warden-ledger/requirements.txt -r warden-ocr/requirements.txt \
-                      -r warden-control/requirements.txt pytest
+                      -r warden-control/requirements.txt -r warden-ledger/requirements-dev.txt
       - name: Ledger
         working-directory: warden-ledger
         run: pytest -q
@@ -94,15 +94,15 @@ jobs:
       PGPASS_LITELLM: ci-litellm
       PGPASS_MLFLOW: ci-mlflow
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
       - run: sh infra/postgres-init/01-create-service-databases.sh
       - name: Install the backend and the services its tests start (ledger, policy, control)
         run: |
           pip install -r warden-backend/requirements.txt -r warden-backend/requirements-eval.txt \
                       -r warden-ledger/requirements.txt -r warden-policy/requirements.txt \
-                      -r warden-control/requirements.txt pytest
+                      -r warden-control/requirements.txt -r warden-backend/requirements-dev.txt
       - name: Tests (the model is a test double; MLflow tests skip without a server)
         working-directory: warden-backend
         run: pytest -q -rs
@@ -111,8 +111,8 @@ jobs:
     name: Console type check and build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: "22", cache: npm, cache-dependency-path: warden-console/package-lock.json }
       - working-directory: warden-console
         run: |
@@ -124,7 +124,7 @@ jobs:
     name: Compose files and secrets
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: The whole stack's Compose configuration is valid
         run: |
           cp .env.example .env
