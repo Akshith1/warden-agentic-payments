@@ -17,9 +17,14 @@ model_list:
       api_key: os.environ/GROQ_API_KEY
 
 litellm_settings:
+  # Phase 8: records each agent's tokens and cost in warden-control after every call.
+  callbacks: warden_gateway.spend_logger
   num_retries: 2
   request_timeout: 120
   drop_params: true
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  # Phase 8: every call is checked against the caller's agent rules (infra/litellm/agents.yaml):
+  # its own key, its allowed routes, not paused by the kill switch, under its daily budget.
+  custom_auth: warden_gateway.user_api_key_auth

@@ -5,7 +5,7 @@ type Ctx = { params: Promise<{ path: string[] }> };
 
 // The kill switch and the audit log. warden-control checks the person's token and role itself:
 // approvers and controllers may stop payments, only controllers may resume them.
-const GET_ALLOWED = [/^status$/, /^audit$/, /^audit\/verify$/];
+const GET_ALLOWED = [/^status$/, /^audit$/, /^audit\/verify$/, /^spend$/];
 const POST_ALLOWED = [/^kill-switch\/(trip|reset)$/];
 
 async function forward(req: Request, ctx: Ctx, allowed: RegExp[], init: RequestInit) {

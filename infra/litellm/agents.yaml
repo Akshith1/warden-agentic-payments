@@ -1,0 +1,25 @@
+# Phase 8: what each agent may do at the gateway. Each agent has its own key
+# (generated into the agent-keys volume, never in .env). On every call the
+# gateway checks the key, that the route is in the agent's list, that the
+# agent isn't paused by the kill switch, and that today's tokens are under the
+# budget. Token budgets don't depend on prices; the cost in USD is recorded
+# too, where LiteLLM knows the model's price. A day is the UTC day.
+agents:
+  guardrail:
+    routes: [warden-guardrail]
+    daily_tokens: 400000
+  extraction:
+    routes: [warden-routine]
+    daily_tokens: 400000
+  risk-scoring:
+    routes: [warden-routine, warden-reasoning]   # the reasoning route only above the routine amount
+    daily_tokens: 400000
+  approval:
+    routes: [warden-reasoning]
+    daily_tokens: 300000
+  critic:
+    routes: [warden-routine]                     # deliberately the other provider from approval
+    daily_tokens: 300000
+  eval-gate:
+    routes: [warden-routine]
+    daily_tokens: 600000

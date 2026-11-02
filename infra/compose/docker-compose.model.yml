@@ -7,17 +7,47 @@ networks:
 
 volumes:
   mlflow-artifacts:
+  agent-keys:
 
 services:
+  # Phase 8: one gateway key per agent, generated once into the agent-keys volume and never
+  # written to .env. Only LiteLLM and the services that call it for an agent mount it.
+  agent-keys-init:
+    image: python:3.13-slim
+    command:
+      - python
+      - -c
+      - |
+        import json, os, secrets
+        path = "/keys/agent-keys.json"
+        agents = ["guardrail", "extraction", "risk-scoring", "approval", "critic", "eval-gate"]
+        keys = json.load(open(path)) if os.path.exists(path) else {}
+        keys.update({a: "sk-warden-" + a + "-" + secrets.token_urlsafe(24) for a in agents if a not in keys})
+        json.dump(keys, open(path, "w"), indent=2)
+        os.chown(path, 10001, 10001); os.chmod(path, 0o400)
+        print("agent keys ready:", ", ".join(sorted(keys)))
+    volumes:
+      - agent-keys:/keys
+    restart: "no"
+
   litellm:
     build: ./infra/litellm
     restart: unless-stopped
+    depends_on:
+      agent-keys-init:
+        condition: service_completed_successfully
+      # The gateway asks the control plane before every call (pause, budget), so it starts after it.
+      warden-control:
+        condition: service_healthy
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?add your OpenAI key to .env}
       GROQ_API_KEY: ${GROQ_API_KEY:?add your Groq key to .env}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set in .env}
+      CONTROL_URL: http://warden-control:8000
+    volumes:
+      - agent-keys:/run/agent-keys:ro
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     deploy:
       resources:
         limits:
@@ -42,7 +72,7 @@ services:
     volumes:
       - mlflow-artifacts:/mlartifacts
     ports:
-      - "5500:5000"
+      - "127.0.0.1:5500:5000"
     deploy:
       resources:
         limits:
@@ -58,8 +88,11 @@ services:
       POSTGRES_HOST: postgres
       PGPASS_WARDEN_BACKEND: ${PGPASS_WARDEN_BACKEND:?set in .env}
       LITELLM_URL: http://litellm:4000
-      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:?set in .env}
+      # Phase 8: the gate calls as the eval-gate agent, with its own key and budget.
+      AGENT_KEYS_FILE: /run/agent-keys/agent-keys.json
       MLFLOW_TRACKING_URI: http://mlflow:5000
       EVAL_SAMPLE_SIZE: ${EVAL_SAMPLE_SIZE:-40}
       PROMOTION_THRESHOLD: ${PROMOTION_THRESHOLD:-0.80}
       FIELD_FLOOR: ${FIELD_FLOOR:-0.75}
+    volumes:
+      - agent-keys:/run/agent-keys:ro
