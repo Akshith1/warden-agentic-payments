@@ -7,7 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.agents import Deps
 from app.graph import build_graph
 
 from .test_graph import FakeLLM, invoice
@@ -17,10 +16,18 @@ from .test_graph import FakeLLM, invoice
 def api(ledger, monkeypatch):
     monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")  # bundled prompt; the registry is tested separately
     fake = FakeLLM(invoice(vendor="Brand New LLC", total=75.0))
-    monkeypatch.setattr(main, "build_graph", lambda deps, cp: build_graph(
-        Deps(llm=fake, ledger=ledger, sleep=lambda s: None), cp))
+    monkeypatch.setattr(main, "build_graph", using(fake, ledger))
     with TestClient(main.app) as client:
         yield client
+
+
+def using(fake, ledger):
+    """Swaps the model and ledger in the service's own Deps, so the graph and the
+    endpoints (which also call the ledger) share the test ledger."""
+    def build(deps, cp):
+        deps.llm, deps.ledger, deps.sleep = fake, ledger, (lambda s: None)
+        return build_graph(deps, cp)
+    return build
 
 
 def wait_for(client, run_id, status, timeout=10):
@@ -72,8 +79,7 @@ def test_failed_run_can_be_retried(ledger, monkeypatch):
 
     fake = OutOfCredit(invoice(vendor="Acme Supply", total=55.0))
     monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")
-    monkeypatch.setattr(main, "build_graph", lambda deps, cp: build_graph(
-        Deps(llm=fake, ledger=ledger, sleep=lambda s: None), cp))
+    monkeypatch.setattr(main, "build_graph", using(fake, ledger))
     with TestClient(main.app) as api:
         run_id = api.post("/runs", json={"invoice_text": "Acme ..."}).json()["run_id"]
         row = wait_for(api, run_id, "failed")
@@ -98,3 +104,37 @@ def test_inbox_lists_and_submits_dataset_receipts(api, ledger):
     row = wait_for(api, run_id, "pending_human")
     assert row["source"] == "dataset"
     assert api.post("/inbox/NOPE/submit").status_code == 404
+
+
+def test_approver_links_first_seen_vendor_to_an_existing_one(api, ledger):
+    from .test_graph import seed_history
+    seed_history(ledger, "Brand New Limited", [60, 70])
+    vid = ledger.lookup_vendor("Brand New Limited")["vendor_id"]
+    run_id = api.post("/runs", json={"invoice_text": "Brand New LLC ..."}).json()["run_id"]
+    wait_for(api, run_id, "pending_human")
+
+    body = {"decision": "approve", "approver": "c1"}
+    assert api.post(f"/runs/{run_id}/resume", json=body | {"decision": "reject", "same_vendor_id": vid}).status_code == 422
+    bad = api.post(f"/runs/{run_id}/resume", json=body | {"same_vendor_id": 999})
+    assert bad.status_code == 409 and "no such vendor" in bad.json()["detail"]
+    assert wait_for(api, run_id, "pending_human")  # still waiting; the person can choose again
+
+    assert api.post(f"/runs/{run_id}/resume", json=body | {"same_vendor_id": vid}).status_code == 202
+    wait_for(api, run_id, "settled")
+    after = ledger.lookup_vendor("Brand New LLC")
+    assert after["vendor_id"] == vid and after["payment_count"] == 3 and after["matched_alias"] == "Brand New LLC"
+
+
+def test_a_known_vendor_cannot_be_relinked(ledger, monkeypatch):
+    from .test_graph import seed_history
+    seed_history(ledger, "Acme Supply", [100])  # known, but too little history: goes to a person
+    seed_history(ledger, "Other Vendor", [100, 100])
+    fake = FakeLLM(invoice(vendor="Acme Supply", total=40.0))
+    monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")
+    monkeypatch.setattr(main, "build_graph", using(fake, ledger))
+    with TestClient(main.app) as api:
+        run_id = api.post("/runs", json={"invoice_text": "Acme ..."}).json()["run_id"]
+        wait_for(api, run_id, "pending_human")
+        other = ledger.lookup_vendor("Other Vendor")["vendor_id"]
+        r = api.post(f"/runs/{run_id}/resume", json={"decision": "approve", "approver": "c1", "same_vendor_id": other})
+        assert r.status_code == 409 and "only a first-seen vendor" in r.json()["detail"]
