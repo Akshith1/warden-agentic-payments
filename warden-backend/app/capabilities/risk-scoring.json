@@ -1,0 +1,7 @@
+{
+  "agent": "risk-scoring",
+  "purpose": "Reads vendor history from the ledger with the read key.",
+  "allowed_actions": [
+    "LookupVendor"
+  ]
+}

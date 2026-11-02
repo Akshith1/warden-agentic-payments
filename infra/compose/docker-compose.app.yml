@@ -21,11 +21,36 @@ services:
         limits:
           memory: 512m
 
+  warden-policy:
+    build: ./warden-policy
+    restart: unless-stopped
+    depends_on:
+      warden-ledger:
+        condition: service_healthy
+    environment:
+      POLICY_DIR: /policies
+      LEDGER_URL: http://warden-ledger:8000
+      # Read-only: the policy service looks up vendor history itself.
+      VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
+    volumes:
+      # Validated at startup; a rejected set stops the service (and with it, payments).
+      - ./policies:/policies:ro
+      # Copies of the policies to try out changes (scenario 07); gitignored, never served.
+      - ./.scratch:/scratch:ro
+    ports:
+      - "8102:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
   warden-backend:
     build: ./warden-backend
     restart: unless-stopped
     depends_on:
       warden-ledger:
+        condition: service_healthy
+      warden-policy:
         condition: service_healthy
       # Start after MLflow so the promoted prompt is found; not required, because the
       # backend falls back to its bundled prompt when MLflow is absent.
@@ -38,6 +63,7 @@ services:
       LITELLM_URL: http://litellm:4000
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY:?set in .env}
       LEDGER_URL: http://warden-ledger:8000
+      POLICY_URL: http://warden-policy:8000
       LEDGER_WRITE_KEY: ${LEDGER_WRITE_KEY:?set in .env}
       VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
       ROUTINE_AMOUNT_THRESHOLD: ${ROUTINE_AMOUNT_THRESHOLD:-5000}

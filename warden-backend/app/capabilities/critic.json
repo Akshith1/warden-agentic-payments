@@ -1,0 +1,5 @@
+{
+  "agent": "critic",
+  "purpose": "Reviews the approval decision. Touches nothing else.",
+  "allowed_actions": []
+}

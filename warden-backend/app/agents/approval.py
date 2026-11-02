@@ -30,7 +30,7 @@ def run(state: RunState, deps: Deps) -> dict:
         return {"approval": decision.model_dump(), "status": "rejected",
                 "status_reason": "; ".join(decision.reasons), "audit_trail": trail}
 
-    # Code-level guards. Phase 4 adds Cedar as an independent second check of the same rules.
+    # Code-level guards. The policy node then checks the same rules again in Cedar (phase 4).
     reasons = list(state.get("escalation_reasons", []))
     if ext["total_amount"] > config.ROUTINE_AMOUNT_THRESHOLD:
         reasons.append(f"amount above ${config.ROUTINE_AMOUNT_THRESHOLD:,.0f} needs a human approver")

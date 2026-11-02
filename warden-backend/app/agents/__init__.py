@@ -6,7 +6,9 @@ import time
 
 from .. import llm
 from ..prompt_registry import LoadedPrompt, bundled
+from ..capability import GuardedLedger
 from ..ledger_client import LedgerClient
+from ..policy_client import PolicyClient
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 
@@ -29,3 +31,8 @@ class Deps:
     ledger: LedgerClient = field(default_factory=LedgerClient)
     sleep: Callable[[float], None] = time.sleep
     extraction_prompt: LoadedPrompt = field(default_factory=bundled)
+    policy: PolicyClient = field(default_factory=PolicyClient)
+
+    def ledger_for(self, agent: str) -> GuardedLedger:
+        """The ledger as `agent` may use it, per its capability manifest."""
+        return GuardedLedger(self.ledger, agent)

@@ -3,7 +3,7 @@ import { BACKEND_URL, relay } from "@/lib/upstream";
 type Ctx = { params: Promise<{ path: string[] }> };
 
 // Only the endpoints the console uses are relayed; anything else is a 404.
-const GET_ALLOWED = [/^health$/, /^runs$/, /^runs\/[\w-]+$/, /^inbox$/];
+const GET_ALLOWED = [/^health$/, /^policies$/, /^runs$/, /^runs\/[\w-]+$/, /^inbox$/];
 const POST_ALLOWED = [/^runs$/, /^runs\/[\w-]+\/(resume|retry)$/, /^inbox\/[\w.-]+\/submit$/];
 
 function target(path: string[], search: string, allowed: RegExp[]): string | null {

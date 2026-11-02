@@ -276,3 +276,94 @@ def test_person_links_a_first_seen_name_to_an_existing_vendor(checkpointer, ledg
     s2 = state(graph2, cfg2)
     assert s2["status"] == "blocked" and "duplicate idempotency key" in s2["status_reason"]
     assert cash(ledger_url) == 10000 - 80
+
+
+# ---- Phase 4: Cedar policies and capability manifests -------------------------------------------
+
+def test_auto_approval_passes_the_policy_check(checkpointer, ledger):
+    seed_history(ledger, "Acme Supply", [100, 105])
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(total=60.0)))
+    s = state(graph, cfg)
+    assert s["status"] == "settled"
+    check = next(e for e in s["audit_trail"] if e["step"] == "policy")
+    assert check["decision"] == "Allow" and check["principal"] == "Agent:approval"
+    assert check["rules"] == ["approval-agent-may-approve"] and check["prior_payments"] == 2
+
+
+def test_fourth_payment_in_a_day_goes_to_a_person(checkpointer, ledger, ledger_url):
+    # Scenario 20 in the source project: a rule over time. The code rules know nothing
+    # about it; only the policy service counts the vendor's payments in the last 24 hours.
+    seed_history(ledger, "Acme Supply", [100, 105])  # dated months ago: not recent
+    for _ in range(3):
+        g, c = run(checkpointer, ledger, FakeLLM(invoice(total=50.0)))
+        assert state(g, c)["status"] == "settled"
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(total=50.0)))
+    s = state(graph, cfg)
+    assert s["status"] == "pending_human"
+    assert s["escalation_reasons"] == ["policy: the vendor already had 3 payments approved in the last 24 hours, "
+                                       "so a person must approve"]
+    graph.invoke(Command(resume={"decision": "approve", "approver": "controller-1"}), cfg)
+    s = state(graph, cfg)
+    assert s["status"] == "settled" and cash(ledger_url) == 10000 - 200
+    checks = [e for e in s["audit_trail"] if e["step"] == "policy"]
+    assert [(c["principal"], c["decision"]) for c in checks] == [("Agent:approval", "Deny"),
+                                                                 ("User:controller-1", "Allow")]
+
+
+def test_cedar_catches_a_rule_the_code_got_wrong(checkpointer, ledger, ledger_url, monkeypatch):
+    # The independent second check: misconfigure the code threshold and Cedar still says no.
+    seed_history(ledger, "Acme Supply", [6000, 6100])
+    monkeypatch.setattr(config, "ROUTINE_AMOUNT_THRESHOLD", 1_000_000)
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(total=6050.0)))
+    s = state(graph, cfg)
+    assert s["status"] == "pending_human" and cash(ledger_url) == 10000
+    assert s["escalation_reasons"] == ["policy: above the 5,000.00 routine amount, so a person must approve"]
+
+
+def test_policy_refusing_a_person_stops_the_run(checkpointer, ledger, ledger_url):
+    from app.policy_client import PolicyClient
+
+    class NoPeople(PolicyClient):  # stands in for a phase 6 rule such as an approval tier
+        def authorize(self, principal, action, **kw):
+            if principal[0] == "User":
+                return {"decision": "Deny", "policies": ["tier-rule"], "reasons": ["needs a controller"], "facts": {}}
+            return super().authorize(principal, action, **kw)
+
+    graph = build_graph(Deps(llm=FakeLLM(invoice(vendor="Brand New LLC")), ledger=ledger, sleep=lambda s: None,
+                             policy=NoPeople()), checkpointer)
+    cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    graph.invoke({"run_id": cfg["configurable"]["thread_id"], "invoice_text": "x", "source": "paste",
+                  "audit_trail": []}, cfg)
+    graph.invoke(Command(resume={"decision": "approve", "approver": "clerk"}), cfg)
+    s = state(graph, cfg)
+    assert s["status"] == "blocked" and s["status_reason"] == "policy refused: needs a controller"
+    assert cash(ledger_url) == 10000
+
+
+def test_no_policy_service_means_no_payment(checkpointer, ledger, ledger_url):
+    import pytest
+    from app.policy_client import PolicyClient
+    seed_history(ledger, "Acme Supply", [100, 105])
+    graph = build_graph(Deps(llm=FakeLLM(invoice(total=40.0)), ledger=ledger, sleep=lambda s: None,
+                             policy=PolicyClient("http://127.0.0.1:9")), checkpointer)
+    cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    with pytest.raises(httpx.ConnectError):  # the API turns this into a 'failed' run that can be retried
+        graph.invoke({"run_id": "x", "invoice_text": "x", "source": "paste", "audit_trail": []}, cfg)
+    assert cash(ledger_url) == 10000
+
+
+def test_capability_manifests_are_a_second_lock(ledger):
+    # Scenarios 09 and 10: no role but payment execution can touch the ledger's write side,
+    # checked in plain code before any HTTP call, whatever Cedar says.
+    import pytest
+    from app.capability import CapabilityDenied, require_capability
+    deps = Deps(llm=None, ledger=ledger)
+    for agent in ("extraction", "risk-scoring", "approval", "critic", "human-review"):
+        with pytest.raises(CapabilityDenied):
+            deps.ledger_for(agent).commit
+    with pytest.raises(CapabilityDenied):
+        deps.ledger_for("extraction").lookup_vendor
+    with pytest.raises(CapabilityDenied, match="no capability manifest"):
+        require_capability("payment-executor", "CreateLedgerEntry")
+    assert deps.ledger_for("payment-execution").commit  # allowed: returns the real method
+    assert deps.ledger_for("risk-scoring").lookup_vendor("Nobody")["known"] is False
