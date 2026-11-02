@@ -41,6 +41,8 @@ export function shortReason(reason: string | null | undefined): string | null {
   if (plain?.startsWith("guardrail:")) return "Guardrail: instructions hidden in the document. No agent read it; open the run for the words found.";
   if (!plain || !plain.startsWith("error:")) return plain;
   const code = plain.match(/Error code: (\d{3})/)?.[1];
+  if (/used its daily budget/i.test(plain)) return "The agent's daily model budget is used up. Retry after midnight UTC, or raise it.";
+  if (/may not use the .* route|paused by the kill switch/i.test(plain)) return "The model gateway refused this agent. Open the run for details.";
   if (/no credits remaining|insufficient_quota/i.test(plain)) return "Model provider: out of API credit. Add credit, then retry.";
   if (code === "429") return "Model provider: rate limit reached. Wait, then retry.";
   if (code) return `Model provider refused the request (${code}). Open the run for details.`;

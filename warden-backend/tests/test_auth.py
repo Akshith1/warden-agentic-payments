@@ -61,3 +61,18 @@ def test_endpoints_need_a_token_and_the_right_role(monkeypatch):
         no_roles = {"Authorization": f"Bearer {token(realm_access={'roles': ['offline_access']})}"}
         assert api.get("/runs", headers=no_roles).status_code == 403
         assert api.get("/runs", headers={"Authorization": "Bearer not-a-jwt"}).status_code == 401
+
+
+def test_each_agent_calls_with_its_own_gateway_key(tmp_path, monkeypatch):
+    import json
+
+    from app import llm
+    keys = tmp_path / "agent-keys.json"
+    keys.write_text(json.dumps({"extraction": "sk-ex", "critic": "sk-cr"}))
+    monkeypatch.setattr(config, "AGENT_KEYS_FILE", str(keys))
+    monkeypatch.setattr(config, "LITELLM_API_KEY", "")
+    llm._agent_keys.cache_clear()
+    assert llm.key_for("extraction") == "sk-ex" and llm.key_for("critic") == "sk-cr"
+    with pytest.raises(RuntimeError, match="no gateway key for the approval agent"):
+        llm.key_for("approval")
+    llm._agent_keys.cache_clear()

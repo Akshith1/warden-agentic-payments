@@ -219,6 +219,12 @@ table.lines { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
 .audit .hash { color: var(--steel); }
 .audit tr.suspect td { background: #fdf1ee; }
 
+.budgets { max-width: 60rem; margin-bottom: 1.5rem; }
+.meter { height: 0.5rem; border-radius: 999px; background: var(--rule); overflow: hidden; margin: 0.35rem 0 0.2rem; max-width: 16rem; }
+.meter span { display: block; height: 100%; background: var(--paid); }
+.meter-high span { background: var(--needs); }
+.meter-full span { background: var(--stopped); }
+
 /* ---- signed-in person, sign-in page ---- */
 .rail { display: flex; flex-direction: column; }
 .who { margin-top: auto; display: grid; gap: 0.15rem; padding: 0.75rem 0.6rem 0; border-top: 1px solid var(--rule); font-size: var(--step--1); }

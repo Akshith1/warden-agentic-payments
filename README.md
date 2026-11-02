@@ -9,6 +9,7 @@ This repository is being built in phases (see [Roadmap](#roadmap)):
 - **Phase 3.5, the vendor master:** when an approver recognises a "first-seen" vendor as one already paid under another name, they link the two in the console. The link is stored as a confirmed alias, so both names share one payment history and one duplicate-invoice check. Nothing is ever matched automatically. See [Vendor aliases](#vendor-aliases-phase-35) and [the phase 3 and 3.5 live run](docs/live-runs/2026-11-phase-3.md).
 - **Phase 4, policies:** every approval and every ledger write is checked a second time by a separate Cedar policy service, with rules in readable files under `policies/`. The service adds a rule over time (no more than 3 agent-approved payments to one vendor in 24 hours) and refuses to start on a policy change that fails validation. Each role's capability manifest is a second, independent lock on the ledger. See [Policies](#policies-phase-4) and [the phase 4 live run](docs/live-runs/2026-11-phase-4.md).
 - **Phase 5, runtime safety:** every document is screened by a guardrail before any agent reads it: fixed rules for known prompt-injection phrases plus the `gpt-oss-safeguard` safety model, and either one stops the run. Scanned invoices are read by a sandboxed OCR service with no network, a read-only filesystem and a kernel-enforced Landlock jail around Tesseract. See [Runtime safety](#runtime-safety-phase-5) and [the phase 5 live run](docs/live-runs/2026-11-phase-5.md).
+- **Phase 8, per-agent model access:** each agent calls the model gateway with its own key. The gateway lets it use only its own routes, cuts off an agent paused by the kill switch, and refuses an agent that has used up its daily token budget. The console shows each agent's use against its budget. See [Model access per agent](#model-access-per-agent-phase-8).
 - **Phase 9a, kill switch and audit log:** anyone with the approver or controller role can stop all payments from the console. Only a controller can resume them. A payment in its settlement hold is stopped before money moves, and retried after the reset. The switch also trips by itself, on a canary vendor or an agent that keeps being refused. Every step of every run goes into a hash-chained audit log that shows exactly where it was edited. See [Kill switch and audit log](#kill-switch-and-audit-log-phase-9a) and [the phase 9a live run](docs/live-runs/2026-11-phase-9a.md).
 - **Phase 6, identity:** people sign in to the console through Keycloak, and every approval is recorded under their own account. Approval is by role (approvers up to 50,000.00, controllers above), and nobody can approve an invoice they submitted. Cedar enforces both, and the backend verifies every token. See [Sign-in and roles](#sign-in-and-roles-phase-6) and [the phase 6 live run](docs/live-runs/2026-11-phase-6.md).
 - **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried. Run live, including the first fully automatic payment; see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md).
@@ -61,7 +62,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `warden-ocr` | Sandboxed OCR for scanned invoices; on an internal network only | (none: no published port) |
 | `keycloak` | Sign-in for people: the `warden` realm, roles and users | http://localhost:8180 (admin at `/admin`) |
 | `warden-control` | Kill switch and hash-chained audit log | http://localhost:8103/status |
-| `litellm` | LLM gateway with the three routes | http://localhost:4000 |
+| `litellm` | LLM gateway with the three routes; one key, route list and daily budget per agent | http://localhost:4000 |
 | `mlflow` | Prompt Registry and gate results | http://localhost:5500 |
 | `postgres` | One database and role per service | localhost:15432 |
 | `data-loader` | One-shot job: SROIE + CORD invoices, USAspending vendors | (job) |
@@ -75,6 +76,7 @@ On Windows PowerShell, use `.\infra\scripts\compose.ps1` wherever this README sa
 
 ```sh
 cp .env.example .env            # then set OPENAI_API_KEY and GROQ_API_KEY
+python infra/scripts/fill-secrets.py   # fresh random values for every local secret
 docker network create warden-net
 sh infra/scripts/compose.sh up -d --build
 sh infra/scripts/compose.sh ps   # wait until postgres, warden-ledger and warden-backend show "healthy"
@@ -146,6 +148,36 @@ Open http://localhost:3100 once the stack is up.
 | Governance | The Extraction prompt version in use and the rules enforced in code, read from the running backend. |
 
 The browser only talks to the console's own server, which relays a fixed list of backend endpoints and read-only ledger endpoints; the ledger key stays on the server, and the console cannot write to the ledger. Pages refresh by polling every 1.5 to 5 seconds rather than over a WebSocket, which is enough for runs that change every few seconds. The approver's name is typed in until phase 6 adds Keycloak logins.
+
+## Model access per agent (phase 8)
+
+Until phase 8 every agent called the LiteLLM gateway with its master key, so any agent could call any model without limit. Now:
+
+- **One key per agent.** A one-off step, `agent-keys-init`, generates a key for each agent into the `agent-keys` Docker volume, never into `.env`. Only LiteLLM, the backend and the eval-gate job mount it, read-only. The backend no longer has the master key, which stays with LiteLLM for administration.
+- **The gateway checks every call** (`infra/litellm/warden_gateway.py`, LiteLLM's custom-auth hook) against `infra/litellm/agents.yaml`:
+
+  | Agent | Routes | Daily tokens |
+  | --- | --- | --- |
+  | guardrail | warden-guardrail | 400,000 |
+  | extraction | warden-routine | 400,000 |
+  | risk-scoring | warden-routine, warden-reasoning | 400,000 |
+  | approval | warden-reasoning | 300,000 |
+  | critic | warden-routine | 300,000 |
+  | eval-gate | warden-routine | 600,000 |
+
+  An unknown key gets 401. A route outside the agent's list gets 403. So does an agent paused by the kill switch: pausing an agent in phase 9a now also cuts off its model access. An agent over today's budget gets 429 ("used its daily budget; it resets at midnight UTC"), and the run fails and can be retried after midnight UTC. Every refusal goes into the audit log. If the control plane can't be reached, no model call is made.
+- **Spend is recorded per agent** after every call: tokens, and the cost in USD where LiteLLM knows the model's price. The Governance page shows each agent's use against its budget.
+
+The budget is checked before each call, so the call that crosses it is the last one allowed; the next is refused. Budgets are in tokens rather than dollars because token counts don't depend on a price table that changes; the cost is recorded alongside.
+
+Per-key budgets are also a built-in LiteLLM feature, but that needs its Prisma database client, whose engine download at build time adds a fragile step. The custom-auth hook gives the same enforcement point with the rules in this repository.
+
+## Rotating secrets
+
+`.env.example` once shipped with ready-made values for the local secrets, and they remain in this repository's history. If your `.env` was copied from it, replace them. Every published port now listens on `127.0.0.1` only, so nothing else on your network can reach these services.
+
+- **`LITELLM_MASTER_KEY`, `LEDGER_WRITE_KEY`, `VENDOR_LOOKUP_KEY`, `KEYCLOAK_ADMIN_PASSWORD`**: delete the value after `=` in `.env`, run `python infra/scripts/fill-secrets.py`, then `up -d`. (Keycloak's admin password only applies to a new Keycloak volume; change it in the admin console otherwise.)
+- **Postgres passwords**: they're set when the database volume is first created. For an existing install, change each role first, then `.env`, for example `compose.ps1 exec postgres psql -U postgres -c "ALTER ROLE warden_ledger PASSWORD '<new>'"`, then `up -d`.
 
 ## Kill switch and audit log (phase 9a)
 
@@ -391,14 +423,13 @@ cd warden-ocr && pip install -r requirements.txt -r requirements-dev.txt && pyte
 cd warden-backend && pip install -r requirements.txt -r requirements-dev.txt && pytest -q   # starts the ledger, policy and control services itself
 ```
 
-They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 9a adds the chain catching an edited and a deleted entry, the tamper script, both automatic triggers, roles on stop and resume, the kill switch overriding every Cedar rule, a payment stopped during its hold and paid on retry, a paused agent while people can still decide, and every step of a twice-stopped run recorded once and in order. Phase 6 adds token checks with real signed tokens (good, wrong key, wrong issuer, wrong audience, expired), roles on every endpoint, approval tiers, and four eyes in both the API and the graph. Phase 5 adds the guardrail's rules against injected and ordinary receipt text, blocked runs that no agent ever reads, the safety model catching a rewording, failing closed when the guardrail is down, scanned invoices through OCR, and (in `warden-ocr`) real Tesseract under a real Landlock jail. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
+They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 8 adds spend per agent against its budget and each agent calling with its own key; the gateway hooks were tested against a running LiteLLM 1.106.5 with mock models (route refused, budget refused, paused agent refused, spend recorded). Phase 9a adds the chain catching an edited and a deleted entry, the tamper script, both automatic triggers, roles on stop and resume, the kill switch overriding every Cedar rule, a payment stopped during its hold and paid on retry, a paused agent while people can still decide, and every step of a twice-stopped run recorded once and in order. Phase 6 adds token checks with real signed tokens (good, wrong key, wrong issuer, wrong audience, expired), roles on every endpoint, approval tiers, and four eyes in both the API and the graph. Phase 5 adds the guardrail's rules against injected and ordinary receipt text, blocked runs that no agent ever reads, the safety model catching a rewording, failing closed when the guardrail is down, scanned invoices through OCR, and (in `warden-ocr`) real Tesseract under a real Landlock jail. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
 
 ## Known simplifications
 
 These are deliberate and each one is removed by a named later phase.
 
 - **Secrets live in `.env`.** Phase 6 moves the ledger write key into Infisical, fetched fresh before every payment.
-- **One gateway key for all agents.** Phase 8 gives each agent its own key, route allowlist and daily budget.
 - **The approval rules are written twice**, in code (`config.py`) and in Cedar (`policies/`), on purpose: two independent checks. Changing a limit means changing both; the stricter one wins until they agree.
 - **The 24-hour limit's memory of in-flight approvals is in the policy service's memory.** After a restart only the ledger's settled payments count until new approvals come in. Phase 9's audit log is the durable record.
 - **Keycloak runs in development mode** with its own file database in a Docker volume, over plain HTTP on localhost. The Azure profile (phase 11) puts sign-in behind TLS with Entra ID.
@@ -424,7 +455,7 @@ These are deliberate and each one is removed by a named later phase.
 | 6 | Keycloak sign-in, approval roles and tiers, four eyes (done) | identity |
 | 6b | Infisical secrets vault, SPIRE workload identity | 02 |
 | 7 | OpenMetadata, Presidio, Great Expectations | 03, 22 |
-| 8 | Per-agent LiteLLM keys and budgets | 12 |
+| 8 | Per-agent gateway keys, route allowlists, daily token budgets, spend per agent (done) | 12 |
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry, Langfuse, Grafana | 24-27 |
 | 10 | GitHub Actions: policy validation, data-quality self-test, eval gate | CI |

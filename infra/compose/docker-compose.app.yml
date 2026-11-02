@@ -23,7 +23,7 @@ services:
       VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
       OPENING_CASH: ${OPENING_CASH:-250000.00}
     ports:
-      - "8101:8000"
+      - "127.0.0.1:8101:8000"
     deploy:
       resources:
         limits:
@@ -36,6 +36,7 @@ services:
     command: ["chown", "-R", "10001:10001", "/data"]
     volumes:
       - control-data:/data
+      - ./infra/litellm/agents.yaml:/etc/warden/agents.yaml:ro
     restart: "no"
 
   warden-control:
@@ -53,8 +54,9 @@ services:
       CANARY_VENDORS: ${CANARY_VENDORS:-CANARY-DO-NOT-PAY}
     volumes:
       - control-data:/data
+      - ./infra/litellm/agents.yaml:/etc/warden/agents.yaml:ro
     ports:
-      - "8103:8000"
+      - "127.0.0.1:8103:8000"
     deploy:
       resources:
         limits:
@@ -80,7 +82,7 @@ services:
       # Copies of the policies to try out changes (scenario 07); gitignored, never served.
       - ./.scratch:/scratch:ro
     ports:
-      - "8102:8000"
+      - "127.0.0.1:8102:8000"
     deploy:
       resources:
         limits:
@@ -119,6 +121,8 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+      litellm:
+        condition: service_healthy
       # Start after MLflow so the promoted prompt is found; not required, because the
       # backend falls back to its bundled prompt when MLflow is absent.
       mlflow:
@@ -128,7 +132,8 @@ services:
       POSTGRES_HOST: postgres
       PGPASS_WARDEN_BACKEND: ${PGPASS_WARDEN_BACKEND:?set in .env}
       LITELLM_URL: http://litellm:4000
-      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:?set in .env}
+      # Phase 8: each agent calls with its own key from the agent-keys volume; no master key here.
+      AGENT_KEYS_FILE: /run/agent-keys/agent-keys.json
       LEDGER_URL: http://warden-ledger:8000
       POLICY_URL: http://warden-policy:8000
       OCR_URL: http://warden-ocr:8000
@@ -143,8 +148,10 @@ services:
       LEDGER_CURRENCY: ${LEDGER_CURRENCY:-MYR}
       MIN_PRIOR_PAYMENTS: ${MIN_PRIOR_PAYMENTS:-2}
       MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      - agent-keys:/run/agent-keys:ro
     ports:
-      - "8100:8000"
+      - "127.0.0.1:8100:8000"
     deploy:
       resources:
         limits:
@@ -168,7 +175,7 @@ services:
       # Read-only ledger key, used by the console's server only; the browser never sees it.
       VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     deploy:
       resources:
         limits:

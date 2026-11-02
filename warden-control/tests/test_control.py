@@ -112,3 +112,24 @@ def test_an_agent_refused_again_and_again_is_paused(api, monkeypatch):
 def test_reading_the_log_needs_a_sign_in(api):
     assert api.get("/audit").status_code == 401
     assert api.get("/audit/verify").status_code == 401
+
+
+def test_spend_per_agent_against_its_budget(api, tmp_path, monkeypatch):
+    agents = tmp_path / "agents.yaml"
+    agents.write_text("agents:\n  critic:\n    routes: [warden-routine]\n    daily_tokens: 1000\n"
+                      "  approval:\n    routes: [warden-reasoning]\n    daily_tokens: 500\n")
+    monkeypatch.setattr(config, "AGENTS_FILE", str(agents))
+    now = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    for _ in range(3):
+        api.post("/spend", json={"agent": "critic", "route": "warden-routine", "prompt_tokens": 200,
+                                 "completion_tokens": 50, "cost_usd": 0.0001, "at": now})
+    api.post("/spend", json={"agent": "critic", "route": "warden-routine", "prompt_tokens": 9, "completion_tokens": 1,
+                             "at": "2026-01-01T10:00:00+00:00"})  # an old day doesn't count today
+    today = api.get("/spend/today", params={"agent": "critic"}).json()
+    assert today["calls"] == 3 and today["tokens"] == 750 and round(today["cost_usd"], 4) == 0.0003
+    report = api.get("/spend", headers=CLERK).json()
+    rows = {r["agent"]: r for r in report["today"]}
+    assert rows["critic"]["daily_tokens"] == 1000 and rows["critic"]["tokens"] == 750
+    assert rows["approval"]["tokens"] == 0 and rows["approval"]["routes"] == ["warden-reasoning"]
+    assert report["by_day"][0]["calls"] == 3
+    assert api.get("/spend").status_code == 401  # the report needs a sign-in; the gateway's check doesn't
