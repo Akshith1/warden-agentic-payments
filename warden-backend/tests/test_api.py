@@ -147,3 +147,23 @@ def test_policies_lists_cedar_rules_and_capability_manifests(api):
     assert {"agents-vendor-rate-limit", "only-write-tier-writes-ledger"} <= ids
     writers = [m["agent"] for m in body["capabilities"] if "CreateLedgerEntry" in m["allowed_actions"]]
     assert writers == ["payment-execution"]
+
+
+def test_image_submission_is_read_by_ocr_and_never_returned(ledger, monkeypatch):
+    from .test_graph import FakeOcr
+    fake = FakeLLM(invoice(vendor="Brand New LLC", total=75.0))
+    ocr = FakeOcr("BRAND NEW LLC\nTotal 75.00")
+
+    def build(deps, cp):
+        deps.llm, deps.ledger, deps.sleep, deps.ocr = fake, ledger, (lambda s: None), ocr
+        return build_graph(deps, cp)
+    monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")
+    monkeypatch.setattr(main, "build_graph", build)
+    with TestClient(main.app) as api:
+        run_id = api.post("/runs/image", json={"image_base64": "iVBORw0KGgo=", "filename": "r.png"}).json()["run_id"]
+        row = wait_for(api, run_id, "pending_human")
+        assert row["source"] == "ocr" and ocr.calls == 1
+        detail = api.get(f"/runs/{run_id}").json()
+        assert "image_base64" not in detail["state"] and detail["state"]["invoice_text"].startswith("BRAND NEW")
+        monkeypatch.setattr(main.config, "MAX_IMAGE_BYTES", 4)
+        assert api.post("/runs/image", json={"image_base64": "A" * 100}).status_code == 413

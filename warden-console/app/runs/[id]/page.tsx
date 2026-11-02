@@ -28,7 +28,9 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
         <article className="voucher" aria-label="Invoice as the agents read it">
           <div className="voucher-head">
             <div>
-              <h1 className="vendor">{ext?.vendor_name ?? "Reading the invoice…"}</h1>
+              <h1 className="vendor">
+                {ext?.vendor_name ?? (FINISHED.has(status) ? "Not read by the agents" : "Reading the invoice…")}
+              </h1>
               <p className="muted">
                 {ext?.invoice_number ? `Invoice ${ext.invoice_number}` : "No invoice number"}
                 {ext?.invoice_date ? `, dated ${ext.invoice_date}` : ""}
@@ -37,13 +39,13 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
             <Status status={status} />
           </div>
 
-          <p className="amount">
+          {ext && <p className="amount">
             <span className="currency">
               {ext?.currency ?? ""}
               {ext?.currency_assumed ? <abbr title="No currency printed; ledger currency assumed by rule">*</abbr> : null}
             </span>
             {money(ext?.total_amount)}
-          </p>
+          </p>}
 
           {ext && ext.line_items.length > 0 && (
             <table className="lines">
@@ -113,6 +115,19 @@ function Step({ entry, previous }: { entry: TrailEntry; previous?: TrailEntry })
   const e = entry as Record<string, unknown>;
   let detail: React.ReactNode = null;
   switch (entry.step) {
+    case "ocr":
+      detail = e.ok
+        ? `${e.chars} characters in ${e.seconds} s, kernel sandbox (Landlock ABI ${e.landlock_abi}), no network`
+        : `Could not read it: ${e.error ?? "no text found"}`;
+      break;
+    case "guardrail": {
+      const hits = (e.rule_hits as { category: string; evidence: string }[]) ?? [];
+      detail = e.safe
+        ? "No instructions to the AI found by the rules or the safety model"
+        : `Stopped: ${[...hits.map((h) => `rule found "${h.evidence}"`),
+                      ...(e.model_safe ? [] : [`safety model: ${String(e.model_reason)}`])].join("; ")}`;
+      break;
+    }
     case "extraction":
       detail = e.outcome === "needs_documentation"
         ? `Asked for documentation: ${(e.problems as string[]).join("; ")}`

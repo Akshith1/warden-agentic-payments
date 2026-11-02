@@ -8,12 +8,15 @@ This repository is being built in phases (see [Roadmap](#roadmap)):
 - **Phase 3, the console:** a web app at http://localhost:3100 to submit invoices, watch each agent's step as it happens, decide escalated invoices, retry failed runs, and see the ledger and the rules in force.
 - **Phase 3.5, the vendor master:** when an approver recognises a "first-seen" vendor as one already paid under another name, they link the two in the console. The link is stored as a confirmed alias, so both names share one payment history and one duplicate-invoice check. Nothing is ever matched automatically. See [Vendor aliases](#vendor-aliases-phase-35) and [the phase 3 and 3.5 live run](docs/live-runs/2026-11-phase-3.md).
 - **Phase 4, policies:** every approval and every ledger write is checked a second time by a separate Cedar policy service, with rules in readable files under `policies/`. The service adds a rule over time (no more than 3 agent-approved payments to one vendor in 24 hours) and refuses to start on a policy change that fails validation. Each role's capability manifest is a second, independent lock on the ledger. See [Policies](#policies-phase-4) and [the phase 4 live run](docs/live-runs/2026-11-phase-4.md).
+- **Phase 5, runtime safety:** every document is screened by a guardrail before any agent reads it: fixed rules for known prompt-injection phrases plus the `gpt-oss-safeguard` safety model, and either one stops the run. Scanned invoices are read by a sandboxed OCR service with no network, a read-only filesystem and a kernel-enforced Landlock jail around Tesseract. See [Runtime safety](#runtime-safety-phase-5).
 - **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried. Run live, including the first fully automatic payment; see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md).
 
 ## How a payment flows today
 
 ```
-invoice text
+invoice text  or  scanned image -> Sandboxed OCR (warden-ocr: no network, read-only, Landlock jail)
+   |
+Guardrail ............... rules + safety model on the raw text; hidden instructions -> blocked
    |
 Extraction agent ........ typed fields: vendor, number, date, total, line items, remit-to account
    |                      (blocked if the vendor or total is missing, or line items don't add up)
@@ -53,6 +56,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `warden-backend` | FastAPI + LangGraph agent runtime | http://localhost:8100/docs |
 | `warden-ledger` | Double-entry ledger, vendor master, payment history | http://localhost:8101/docs |
 | `warden-policy` | Cedar policy decision point; validates `policies/` at startup | http://localhost:8102/docs |
+| `warden-ocr` | Sandboxed OCR for scanned invoices; on an internal network only | (none: no published port) |
 | `litellm` | LLM gateway with the three routes | http://localhost:4000 |
 | `mlflow` | Prompt Registry and gate results | http://localhost:5500 |
 | `postgres` | One database and role per service | localhost:15432 |
@@ -129,6 +133,40 @@ Open http://localhost:3100 once the stack is up.
 | Governance | The Extraction prompt version in use and the rules enforced in code, read from the running backend. |
 
 The browser only talks to the console's own server, which relays a fixed list of backend endpoints and read-only ledger endpoints; the ledger key stays on the server, and the console cannot write to the ledger. Pages refresh by polling every 1.5 to 5 seconds rather than over a WebSocket, which is enough for runs that change every few seconds. The approver's name is typed in until phase 6 adds Keycloak logins.
+
+## Runtime safety (phase 5)
+
+An invoice is untrusted input written by whoever sent it, and the Extraction agent is a language model that follows instructions. Phase 5 stops a document from instructing the agents, and keeps a malicious image file from harming the system that reads it.
+
+**The guardrail** runs first on every document, pasted or scanned. Only the Extraction agent ever reads raw text; every later agent sees its typed fields, so this one checkpoint covers them all. It has two independent layers:
+
+| Layer | What it is | Why both |
+| --- | --- | --- |
+| Rules | Fixed patterns for known injection shapes: "ignore previous instructions", "system:", "note to the AI", "pre-approved", "do not send for review" (`warden-backend/app/agents/guardrail.py`) | Predictable and free; they can't be argued out of a match |
+| Safety model | `gpt-oss-safeguard-20b` on the `warden-guardrail` route, given a written policy (`prompts/guardrail.txt`) with four categories: instructions to the AI, self-approval, payment redirection, other | Catches rewordings no rule lists |
+
+If either layer flags the document, the run is **blocked**, with the words that triggered it in the reason and the trail. It isn't sent to a person: approving it would still hand the text to the Extraction agent. If the guardrail model can't be reached, the run fails and can be retried; it never passes unchecked.
+
+**The OCR sandbox.** A scanned invoice (PNG, JPEG or TIFF, up to 5 MB) goes to `warden-ocr`, never to the backend's own disk. Image decoders are a classic attack surface, so the service is locked down in layers:
+
+| Layer | Set by |
+| --- | --- |
+| No route to the internet: its only network is `warden-ocr`, an internal Docker network shared with the backend alone | `docker-compose.app.yml` |
+| Read-only root filesystem, non-root user (uid 10001), all Linux capabilities dropped, no privilege escalation, 64 processes, 1.5 GB memory | `docker-compose.app.yml` |
+| Each image is read by a separate Tesseract process under a **Landlock** ruleset: it can read only the system libraries and its own job folder, can write nowhere, and can't open a network connection. The kernel enforces this, so it holds even if Tesseract is compromised. CPU time, memory and file size are capped too. | `warden-ocr/app/jail.py`, `landlock.py` |
+| The job folder is deleted after each image, and the backend drops the image from the run once it has the text | `warden-ocr/app/main.py`, `agents/ocr.py` |
+
+If the kernel has no Landlock, the service refuses to read images rather than reading them unsandboxed (`/health` reports `"unsandboxed"`).
+
+### Try it (scenarios 08 and 11 of the source project)
+
+**08, hidden instructions.** On **Submit invoice**, upload `docs/samples/receipt-injected.png`, an invented receipt with a "note to AI assistant" in its footer. The trail shows the sandboxed OCR, then the guardrail stopping it with the words it found. No agent runs. For comparison, `docs/samples/receipt-clean.png` is the same receipt without the note. It passes the guardrail and goes to you as a first-seen vendor. You can also paste text with an instruction in it.
+
+**11, what the sandbox refuses:**
+```powershell
+.\infra\scripts\compose.ps1 exec warden-ocr python -m app.selftest
+```
+This prints the kernel's Landlock version, the user (not root) and the read-only root filesystem. It then lists what a process inside the jail tried and was refused: writing anywhere, reading the service's own code, and connecting to the internet or to the ledger.
 
 ## Policies (phase 4)
 
@@ -267,10 +305,11 @@ export $(grep -E '^PGPASS_WARDEN_(LEDGER|BACKEND)=' .env | xargs)
 
 cd warden-ledger && pip install -r requirements.txt -r requirements-dev.txt && pytest -q && cd ..
 cd warden-policy && pip install -r requirements.txt -r requirements-dev.txt && pytest -q && cd ..
+cd warden-ocr && pip install -r requirements.txt -r requirements-dev.txt && pytest -q && cd ..   # needs tesseract; Landlock tests skip without it
 cd warden-backend && pip install -r requirements.txt -r requirements-dev.txt && pytest -q   # starts the ledger and policy service itself
 ```
 
-They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
+They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 5 adds the guardrail's rules against injected and ordinary receipt text, blocked runs that no agent ever reads, the safety model catching a rewording, failing closed when the guardrail is down, scanned invoices through OCR, and (in `warden-ocr`) real Tesseract under a real Landlock jail. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
 
 ## Known simplifications
 
@@ -283,7 +322,9 @@ These are deliberate and each one is removed by a named later phase.
 - **Any person may approve any amount.** Approval tiers need real identities, which phase 6 (Keycloak) adds.
 - **Only the Extraction prompt is registry-managed.** It is the one the gate can score against labels. The Risk, Approval and Critic prompts are versioned in git; scoring them needs labelled fraud decisions, which no public dataset here provides.
 - **A promoted prompt takes effect on restart**, not live, matching how the backend loads it once at startup.
-- **No guardrail model, OCR sandbox or kill switch yet.** Phases 5 and 9.
+- **No kill switch yet.** Phase 9.
+- **The guardrail blocks; it doesn't ask.** A legitimate invoice that happens to say "pre-approved" is blocked, and the sender has to resubmit without it. That is the safer failure for a payments system. The rules' wording is tested against ordinary receipt text in `tests/test_guardrail.py`.
+- **The guardrail model isn't scored by the evaluation gate yet.** The gate scores extraction against labelled receipts. Scoring the guardrail needs a labelled set of injected and clean documents, which can come from the live runs.
 - **Single-currency ledger, no conversion.** The ledger is denominated in `LEDGER_CURRENCY` (MYR by default, matching the SROIE receipts). A document showing another currency is escalated, never converted. The USAspending vendor history is in US dollars and is used only as a reference vendor set; it shares no vendors with the receipts.
 
 ## Roadmap
@@ -295,7 +336,7 @@ These are deliberate and each one is removed by a named later phase.
 | 3 | Next.js console: submit, live run view, approval queue (done) | 01 from the browser |
 | 3.5 | Vendor master: human-confirmed aliases (done) | phase 3 live-run finding |
 | 4 | Cedar policies, 24-hour vendor limit, capability manifests (done) | 06, 07, 09, 10, 20 |
-| 5 | Guardrail model, sandboxed OCR (Landlock), confidence gate, dry run, hold | 08, 11, 16, 17, 18 |
+| 5 | Guardrail (rules + safety model), sandboxed OCR with Landlock (done); confidence gate, dry run and hold were built in phases 1-2 | 08, 11, 16, 17, 18 |
 | 6 | Keycloak, SPIRE, Infisical | 02, 20 |
 | 7 | OpenMetadata, Presidio, Great Expectations | 03, 22 |
 | 8 | Per-agent LiteLLM keys and budgets | 12 |
