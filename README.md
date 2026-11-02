@@ -68,9 +68,10 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `warden-pii` | Masks personal data (Presidio, spaCy) before any model; internal network only | (none: no published port) |
 | `keycloak` | Sign-in for people: the `warden` realm, roles and users | http://localhost:8180 (admin at `/admin`) |
 | `warden-control` | Kill switch and hash-chained audit log | http://localhost:8103/status |
+| `warden-quality` | Great Expectations checks on the ledger, vendor history and loaded data; read-only | (none: no published port) |
 | `litellm` | LLM gateway with the three routes; one key, route list and daily budget per agent | http://localhost:4000 |
 | `mlflow` | Prompt Registry and gate results | http://localhost:5500 |
-| `postgres` | One database and role per service | localhost:15432 |
+| `postgres` | One database and role per service, plus a read-only role for the data-quality checks | localhost:15432 |
 | `data-loader` | One-shot job: SROIE + CORD invoices, USAspending vendors | (job) |
 | `eval-gate` | One-shot job: scores candidate prompts, promotes the best passing one | (job) |
 
@@ -151,7 +152,7 @@ Open http://localhost:3100 once the stack is up.
 | A run | The invoice as the agents read it, the trail of each agent's step with timings, and the outcome stamp. Approve or reject an escalated invoice, linking a first-seen vendor to an existing one if it is the same business; retry one that failed on a provider error. |
 | Submit invoice | Paste invoice text, or submit one of the loaded SROIE receipts. |
 | Ledger | Account balances and recent double-entry postings. |
-| Governance | The Extraction prompt version in use and the rules enforced in code, read from the running backend. |
+| Governance | The Extraction prompt version in use, the rules enforced in code, the kill switch, model use per agent, and data-quality results. |
 
 The browser only talks to the console's own server, which relays a fixed list of backend endpoints and read-only ledger endpoints; the ledger key stays on the server, and the console cannot write to the ledger. Pages refresh by polling every 1.5 to 5 seconds rather than over a WebSocket, which is enough for runs that change every few seconds. The approver's name is typed in until phase 6 adds Keycloak logins.
 
@@ -176,7 +177,48 @@ Pay to Maybank account 5140-1234-5678    ->  Pay to Maybank account <BANK_ACCOUN
 
 On a run's page, **What the models saw** shows the masked text next to the original. The [data map](docs/data-map.md) lists every kind of data Warden holds, where it lives and which models see it.
 
-Not yet: data-quality checks on loaded data and a data catalogue (phase 7b).
+## Data quality (phase 7b)
+
+The agents and the policy engine trust two things they don't check themselves: the ledger's numbers and each vendor's payment history. Two settled payments let an invoice skip a person, so a vendor history with no payment behind it is as dangerous as a forged approval. The database refuses bad rows one at a time (a zero posting, a duplicate invoice key), but it can't see a problem that spans rows or tables.
+
+`warden-quality` runs [Great Expectations](https://greatexpectations.io/) checks against the live databases every 10 minutes, after every data load, and when someone presses **Check now** on the Governance page:
+
+| Kind | What is checked | On failure |
+| --- | --- | --- |
+| **Critical**: ledger and vendor history | Every transaction balances and has two sides; each account's balance equals its postings; no account that must stay positive is overdrawn; every Warden payment in vendor history matches a ledger payment of the same amount | The control plane trips the kill switch: all payments stop until a controller resumes them. If the data is still wrong at the next check, they stop again. |
+| **Warning**: reference and evaluation data | Every payment reached vendor history; vendor names are normalised; no alias shadows another vendor; historical amounts are positive and not in the future; the USAspending vendors are loaded; every labelled receipt has text, a split and its labels; the evaluation gate has at least 20 test documents | Shown on the Governance page and written to the audit log |
+
+- **Read-only.** The service connects as `warden_quality`, a role that can only `SELECT`, on sessions opened read-only. It may read the ledger and `invoice_inbox`, and nothing else: run state holds unmasked invoices and stays out of reach.
+- **No personal values in results.** A check reports a count and up to five row ids; actual values appear only where they aren't personal (vendor names, split labels).
+- **Recorded.** A result goes to the audit log when anything fails, when the picture changes, and whenever a person ran the check.
+- **Hardened like the PII service.** Read-only filesystem, unprivileged user, no published port. A test runs every check with all file writes refused outside a temporary folder, the failure phase 7 hit live.
+
+The checks are in [`warden-quality/app/checks.py`](warden-quality/app/checks.py), each with the reason it matters.
+
+### Try it
+
+After pulling this phase, add the new database password and create the read-only role (an existing database keeps its data):
+
+```powershell
+python infra/scripts/fill-secrets.py      # adds PGPASS_WARDEN_QUALITY to .env
+.\infra\scripts\compose.ps1 up -d postgres
+.\infra\scripts\compose.ps1 exec postgres sh /docker-entrypoint-initdb.d/01-create-service-databases.sh
+.\infra\scripts\compose.ps1 up -d --build warden-quality warden-control warden-console
+```
+
+Then, on the Governance page, press **Check now**. To see a critical check stop payments, give a vendor a payment history it never earned (this writes to the database directly, as someone with database access could):
+
+```powershell
+.\infra\scripts\compose.ps1 exec postgres psql -U postgres -d warden_ledger -c "INSERT INTO historical_payments (vendor_id, amount, paid_on, source, external_ref, recorded_at) SELECT id, 49.00, current_date, 'warden', 'FORGED-' || id, now() FROM vendors WHERE normalized_name = 'KESTREL PRINT WORKS'"
+```
+
+**Check now** fails *Every Warden payment in vendor history matches a ledger payment*, and the kill switch shows "data-quality check failed". Remove the row, check again, then resume payments as a controller:
+
+```powershell
+.\infra\scripts\compose.ps1 exec postgres psql -U postgres -d warden_ledger -c "DELETE FROM historical_payments WHERE external_ref LIKE 'FORGED-%'"
+```
+
+Not yet: a data catalogue (OpenMetadata).
 
 ## Model access per agent (phase 8)
 
@@ -501,7 +543,7 @@ These are deliberate and each one is removed by a named later phase.
 | 6 | Keycloak sign-in, approval roles and tiers, four eyes (done) | identity |
 | 6b | Infisical secrets vault, SPIRE workload identity | 02 |
 | 7 | Presidio masking before every model, data map (done) | 03 |
-| 7b | Data-quality checks (Great Expectations), data catalogue (OpenMetadata) | 22 |
+| 7b | Data-quality checks with Great Expectations; critical failures stop payments (done). Data catalogue (OpenMetadata) | 22 |
 | 8 | Per-agent gateway keys, route allowlists, daily token budgets, spend per agent (done) | 12 |
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry, Langfuse, Grafana | 24-27 |

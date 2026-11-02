@@ -1,0 +1,9 @@
+great_expectations==1.24.1
+sqlalchemy==2.1.6
+psycopg[binary]==3.3.6
+fastapi==0.162.0
+starlette==1.7.0  # pinned: newer Starlette changes its test client; bump on purpose, with the tests
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pyjwt[crypto]==2.15.0
+httpx==0.28.1
