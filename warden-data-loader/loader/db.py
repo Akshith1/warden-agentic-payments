@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS invoice_inbox (
     ground_truth  JSONB NOT NULL,
     loaded_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+COMMENT ON TABLE invoice_inbox IS 'Public labelled receipts (SROIE, CORD) for the evaluation gate and the console''s inbox.';
+COMMENT ON COLUMN invoice_inbox.text IS 'Receipt text as read. Holds personal data (cashiers'' names, phones); masked before any model sees it.';
+COMMENT ON COLUMN invoice_inbox.split IS 'train or test. The evaluation gate scores prompts on the test split only.';
+COMMENT ON COLUMN invoice_inbox.ground_truth IS 'The dataset''s labels: vendor, date, total and more.';
 -- Phase 7b: the data-quality service may read this table (and no other in this database).
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'warden_quality') THEN

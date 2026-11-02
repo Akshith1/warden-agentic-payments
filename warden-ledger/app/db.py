@@ -57,6 +57,22 @@ CREATE TABLE IF NOT EXISTS vendor_aliases (
 -- Nullable on purpose: rows from before phase 4 and bulk-loaded history are not "recent".
 ALTER TABLE historical_payments ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS historical_payments_vendor_idx ON historical_payments (vendor_id, paid_on DESC);
+
+-- Descriptions for the data catalogue (phase 7b), kept with the schema they describe.
+COMMENT ON TABLE accounts IS 'Chart of accounts. balance is the stored running sum of postings (debits minus credits), checked before every payment.';
+COMMENT ON COLUMN accounts.allow_negative IS 'False for operating cash: the ledger refuses a payment that would overdraw it.';
+COMMENT ON TABLE transactions IS 'One row per double-entry transaction. idempotency_key makes a payment happen at most once.';
+COMMENT ON COLUMN transactions.idempotency_key IS 'Vendor ledger name and invoice number for a payment; the same invoice twice collides here.';
+COMMENT ON TABLE postings IS 'The debit and credit lines of each transaction; they must balance.';
+COMMENT ON TABLE vendors IS 'The vendor master: USAspending reference vendors plus vendors Warden has paid.';
+COMMENT ON COLUMN vendors.normalized_name IS 'Upper case, letters, digits and single spaces: the key every lookup uses.';
+COMMENT ON TABLE historical_payments IS 'Payment history per vendor. Two settled Warden payments let an invoice skip a person, so every warden row must match a ledger payment.';
+COMMENT ON COLUMN historical_payments.source IS 'usaspending: reference history loaded once. warden: written after a settled ledger payment.';
+COMMENT ON COLUMN historical_payments.external_ref IS 'For source warden, the idempotency_key of the ledger transaction that paid it.';
+COMMENT ON COLUMN historical_payments.remit_account IS 'The account paid. Personal data when the payee is a sole trader.';
+COMMENT ON COLUMN historical_payments.recorded_at IS 'When the payment was recorded, for the policy service''s 24-hour count.';
+COMMENT ON TABLE vendor_aliases IS 'Other names a person confirmed belong to an existing vendor. Never created by fuzzy matching.';
+COMMENT ON COLUMN vendor_aliases.confirmed_by IS 'Username of the person who confirmed the link.';
 """
 
 CHART_OF_ACCOUNTS = [
