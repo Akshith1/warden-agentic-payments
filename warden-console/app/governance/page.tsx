@@ -1,4 +1,5 @@
 "use client";
+import { KillSwitch } from "@/components/KillSwitch";
 import { useLive } from "@/lib/useLive";
 
 type Policies = {
@@ -27,6 +28,7 @@ export default function GovernancePage() {
         <p className="lede">The rules the agents run under right now, read from the running backend.</p>
       </header>
       {error && <p className="notice notice-error">{error}</p>}
+      <KillSwitch />
       {data && (
         <>
           <h2 className="section">Extraction prompt</h2>

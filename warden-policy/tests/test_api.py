@@ -17,6 +17,7 @@ def api(monkeypatch):
     history = dict(HISTORY)
     main.state.allowed.clear()
     monkeypatch.setattr(main, "vendor_history", lambda name: history)
+    monkeypatch.setattr(main, "kill_switch", lambda principal, action: None)
     with TestClient(main.app) as client:
         client.history = history
         yield client
@@ -112,3 +113,44 @@ def test_people_approve_by_role_and_never_their_own_invoice(api):
     own = approve(api, who=person, roles=["approver", "controller"], submitted_by="amira")
     assert own["decision"] == "Deny" and own["policies"] == ["four-eyes"]
     assert own["reasons"] == ["you submitted this invoice, so another person must approve it"]
+
+
+def test_the_kill_switch_overrides_every_rule(monkeypatch):
+    # Scenario 13: the same request, allowed, then refused while the switch is on.
+    import httpx
+    status = {"global_stop": False, "global": None, "paused_agents": []}
+
+    class Control:
+        def close(self):
+            pass
+
+        def get(self, url, timeout):
+            return httpx.Response(200, json=status, request=httpx.Request("GET", url))
+    monkeypatch.setattr(main, "vendor_history", lambda name: HISTORY)
+    with TestClient(main.app) as client:
+        monkeypatch.setattr(main.state, "control", Control())
+        assert approve(client)["decision"] == "Allow"
+        status.update(global_stop=True, **{"global": {"reason": "manual test", "by": "rajesh"}})
+        stopped = approve(client)
+        assert stopped["decision"] == "Deny" and stopped["kill_switch"] is True
+        assert stopped["reasons"] == ["kill switch is on: manual test (by rajesh)"]
+        assert approve(client, who=("User", "rajesh"), roles=["controller"])["decision"] == "Deny"
+        status.update(global_stop=False, paused_agents=["approval"], **{"global": None})
+        assert approve(client)["reasons"] == ["the approval agent is paused by the kill switch"]
+        assert approve(client, who=("User", "rajesh"), roles=["controller"])["decision"] == "Allow"
+
+
+def test_no_control_plane_no_money(monkeypatch):
+    import httpx
+
+    class Down:
+        def close(self):
+            pass
+
+        def get(self, url, timeout):
+            raise httpx.ConnectError("refused")
+    monkeypatch.setattr(main, "vendor_history", lambda name: HISTORY)
+    with TestClient(main.app) as client:
+        monkeypatch.setattr(main.state, "control", Down())
+        r = approve(client)
+        assert r["decision"] == "Deny" and "control plane unreachable" in r["reasons"][0]
