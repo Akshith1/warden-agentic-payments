@@ -44,6 +44,14 @@ class CriticReview(BaseModel):
     concerns: list[str]
 
 
+class GuardrailVerdict(BaseModel):
+    """Typed output of the guardrail model (gpt-oss-safeguard), which reads the raw text first."""
+    safe: bool
+    category: Literal["none", "instructions_to_ai", "self_approval", "payment_redirect", "other"]
+    evidence: str | None = Field(default=None, description="The exact words that made it unsafe, or null")
+    reason: str
+
+
 Status = Literal[
     "submitted", "extracted", "scored", "pending_human",
     "approved", "settling", "rejected", "blocked", "settled",
@@ -55,7 +63,9 @@ Status = Literal[
 class RunState(TypedDict, total=False):
     run_id: str
     invoice_text: str
+    image_base64: str | None  # a scanned invoice, cleared once the OCR step has read it
     source: str
+    guardrail: dict
     status: Status
     status_reason: str
     extraction: dict
