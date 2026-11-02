@@ -36,7 +36,8 @@ export function KillSwitch() {
         <p>
           Payments are running. Stopping them takes effect at once: the policy engine refuses every approval and
           ledger write, and any payment in its settlement hold is stopped before money moves. It also stops by
-          itself when an invoice names a canary vendor, and pauses an agent the policy engine keeps refusing.
+          itself when an invoice names a canary vendor or a critical data-quality check fails, and pauses an agent
+          the policy engine keeps refusing.
         </p>
       )}
 

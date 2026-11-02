@@ -114,6 +114,19 @@ def watch(event: Event) -> None:
                      actor="watchdog")
 
     p = event.payload
+    # Phase 7b: the data-quality service found the ledger or vendor history wrong. Paying on
+    # numbers that don't add up is worse than not paying, so everything stops until a
+    # controller has looked. Sent again on every run while it stays wrong, so a reset made
+    # before the data is fixed trips again at the next check.
+    if event.type == "data_quality" and p.get("critical_failed"):
+        titles = [c["title"] for c in p.get("failed_checks", []) if c.get("id") in p["critical_failed"]]
+        first = titles[0] if titles else p["critical_failed"][0]
+        more = f" (and {len(p['critical_failed']) - 1} more)" if len(p["critical_failed"]) > 1 else ""
+        reason = f"data-quality check failed: {first}{more}"
+        if store.trip("global", "*", reason, "watchdog"):
+            store.append("kill_switch_tripped", {"scope": "global", "target": "*", "automatic": True,
+                                                 "reason": reason}, actor="watchdog")
+
     if event.type == "run_step" and p.get("step") == "policy" and p.get("decision") == "Deny" \
             and str(p.get("principal", "")).startswith("Agent:"):
         agent = p["principal"].split(":", 1)[1]
