@@ -11,6 +11,7 @@ This repository is being built in phases (see [Roadmap](#roadmap)):
 - **Phase 3.5, the vendor master:** when an approver recognises a "first-seen" vendor as one already paid under another name, they link the two in the console. The link is stored as a confirmed alias, so both names share one payment history and one duplicate-invoice check. Nothing is ever matched automatically. See [Vendor aliases](#vendor-aliases-phase-35) and [the phase 3 and 3.5 live run](docs/live-runs/2026-11-phase-3.md).
 - **Phase 4, policies:** every approval and every ledger write is checked a second time by a separate Cedar policy service, with rules in readable files under `policies/`. The service adds a rule over time (no more than 3 agent-approved payments to one vendor in 24 hours) and refuses to start on a policy change that fails validation. Each role's capability manifest is a second, independent lock on the ledger. See [Policies](#policies-phase-4) and [the phase 4 live run](docs/live-runs/2026-11-phase-4.md).
 - **Phase 5, runtime safety:** every document is screened by a guardrail before any agent reads it: fixed rules for known prompt-injection phrases plus the `gpt-oss-safeguard` safety model, and either one stops the run. Scanned invoices are read by a sandboxed OCR service with no network, a read-only filesystem and a kernel-enforced Landlock jail around Tesseract. See [Runtime safety](#runtime-safety-phase-5) and [the phase 5 live run](docs/live-runs/2026-11-phase-5.md).
+- **Phase 7, personal data:** no model sees personal data. Before the guardrail and the agents read an invoice, a Presidio service replaces names, emails, phone numbers, card and bank numbers and ID numbers with placeholders such as `<PERSON_1>`. Warden puts the real values back in code for the ledger, and masks them again before the next model call. See [Personal data](#personal-data-phase-7) and the [data map](docs/data-map.md).
 - **Phase 8, per-agent model access:** each agent calls the model gateway with its own key. The gateway lets it use only its own routes, cuts off an agent paused by the kill switch, and refuses an agent that has used up its daily token budget. The console shows each agent's use against its budget. See [Model access per agent](#model-access-per-agent-phase-8) and [the phase 8 live run](docs/live-runs/2026-11-phase-8.md).
 - **Phase 9a, kill switch and audit log:** anyone with the approver or controller role can stop all payments from the console. Only a controller can resume them. A payment in its settlement hold is stopped before money moves, and retried after the reset. The switch also trips by itself, on a canary vendor or an agent that keeps being refused. Every step of every run goes into a hash-chained audit log that shows exactly where it was edited. See [Kill switch and audit log](#kill-switch-and-audit-log-phase-9a) and [the phase 9a live run](docs/live-runs/2026-11-phase-9a.md).
 - **Phase 6, identity:** people sign in to the console through Keycloak, and every approval is recorded under their own account. Approval is by role (approvers up to 50,000.00, controllers above), and nobody can approve an invoice they submitted. Cedar enforces both, and the backend verifies every token. See [Sign-in and roles](#sign-in-and-roles-phase-6) and [the phase 6 live run](docs/live-runs/2026-11-phase-6.md).
@@ -20,6 +21,8 @@ This repository is being built in phases (see [Roadmap](#roadmap)):
 
 ```
 invoice text  or  scanned image -> Sandboxed OCR (warden-ocr: no network, read-only, Landlock jail)
+   |
+Privacy ................. warden-pii masks personal data; every model below sees placeholders only
    |
 Guardrail ............... rules + safety model on the raw text; hidden instructions -> blocked
    |
@@ -62,6 +65,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `warden-ledger` | Double-entry ledger, vendor master, payment history | http://localhost:8101/docs |
 | `warden-policy` | Cedar policy decision point; validates `policies/` at startup | http://localhost:8102/docs |
 | `warden-ocr` | Sandboxed OCR for scanned invoices; on an internal network only | (none: no published port) |
+| `warden-pii` | Masks personal data (Presidio, spaCy) before any model; internal network only | (none: no published port) |
 | `keycloak` | Sign-in for people: the `warden` realm, roles and users | http://localhost:8180 (admin at `/admin`) |
 | `warden-control` | Kill switch and hash-chained audit log | http://localhost:8103/status |
 | `litellm` | LLM gateway with the three routes; one key, route list and daily budget per agent | http://localhost:4000 |
@@ -150,6 +154,29 @@ Open http://localhost:3100 once the stack is up.
 | Governance | The Extraction prompt version in use and the rules enforced in code, read from the running backend. |
 
 The browser only talks to the console's own server, which relays a fixed list of backend endpoints and read-only ledger endpoints; the ledger key stays on the server, and the console cannot write to the ledger. Pages refresh by polling every 1.5 to 5 seconds rather than over a WebSocket, which is enough for runs that change every few seconds. The approver's name is typed in until phase 6 adds Keycloak logins.
+
+## Personal data (phase 7)
+
+Invoices carry personal data: cashiers' and customers' names, emails, phone numbers, bank accounts, sometimes card or ID numbers. Before phase 7 all of it went to the model providers as it was.
+
+Now a **privacy** step runs first on every document, pasted or scanned. `warden-pii` finds personal data with [Presidio](https://microsoft.github.io/presidio/), using spaCy's English model for names plus pattern rules. Receipt-specific rules add names after a label ("Cashier:", "Attn:"), bank account numbers after "account", and Malaysian IC numbers. Each value becomes a placeholder:
+
+```
+Cashier: NG CHUAN MIN                    ->  Cashier: <PERSON_2>
+Email: ng@ojcgroup.com                   ->  Email: <EMAIL_ADDRESS_1>
+Pay to Maybank account 5140-1234-5678    ->  Pay to Maybank account <BANK_ACCOUNT_1>
+```
+
+- **The models see placeholders only.** The guardrail and the Extraction agent read the masked text.
+- **Real values are put back in code.** Extraction may answer "pay to `<BANK_ACCOUNT_1>`"; Warden replaces that with the real account for the ledger and the pay-to check.
+- **Masked again before the next model.** The risk, approval and critic agents get the extracted fields with the same placeholders. A test checks that none of the five agents' calls contains the personal values.
+- **The mapping stays in the backend.** It is in the run's state, never returned by the API and never logged. The trail and the audit log record only what kinds were masked and how many ("2 phone number, 1 person, 1 bank account").
+- **Mistakes are cheap.** Because values are restored in code, masking something that wasn't personal, such as part of a company name, doesn't change what Warden records. It only means the model saw a placeholder there.
+- **Fails closed.** If `warden-pii` can't be reached, no model is called and the run fails and can be retried. The service keeps nothing and has no route to the internet.
+
+On a run's page, **What the models saw** shows the masked text next to the original. The [data map](docs/data-map.md) lists every kind of data Warden holds, where it lives and which models see it.
+
+Not yet: data-quality checks on loaded data and a data catalogue (phase 7b).
 
 ## Model access per agent (phase 8)
 
@@ -425,7 +452,7 @@ cd warden-ocr && pip install -r requirements.txt -r requirements-dev.txt && pyte
 cd warden-backend && pip install -r requirements.txt -r requirements-dev.txt && pytest -q   # starts the ledger, policy and control services itself
 ```
 
-They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 8 adds spend per agent against its budget and each agent calling with its own key; the gateway hooks were tested against a running LiteLLM 1.106.5 with mock models (route refused, budget refused, paused agent refused, spend recorded). Phase 9a adds the chain catching an edited and a deleted entry, the tamper script, both automatic triggers, roles on stop and resume, the kill switch overriding every Cedar rule, a payment stopped during its hold and paid on retry, a paused agent while people can still decide, and every step of a twice-stopped run recorded once and in order. Phase 6 adds token checks with real signed tokens (good, wrong key, wrong issuer, wrong audience, expired), roles on every endpoint, approval tiers, and four eyes in both the API and the graph. Phase 5 adds the guardrail's rules against injected and ordinary receipt text, blocked runs that no agent ever reads, the safety model catching a rewording, failing closed when the guardrail is down, scanned invoices through OCR, and (in `warden-ocr`) real Tesseract under a real Landlock jail. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
+They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 7 adds no personal values in any of the five agents' model calls, real values restored for the ledger and the pay-to check, the trail holding kinds and counts only, and no model call without the PII service; `warden-pii` is tested with real Presidio and spaCy on receipt text. Phase 8 adds spend per agent against its budget and each agent calling with its own key; the gateway hooks were tested against a running LiteLLM 1.106.5 with mock models (route refused, budget refused, paused agent refused, spend recorded). Phase 9a adds the chain catching an edited and a deleted entry, the tamper script, both automatic triggers, roles on stop and resume, the kill switch overriding every Cedar rule, a payment stopped during its hold and paid on retry, a paused agent while people can still decide, and every step of a twice-stopped run recorded once and in order. Phase 6 adds token checks with real signed tokens (good, wrong key, wrong issuer, wrong audience, expired), roles on every endpoint, approval tiers, and four eyes in both the API and the graph. Phase 5 adds the guardrail's rules against injected and ordinary receipt text, blocked runs that no agent ever reads, the safety model catching a rewording, failing closed when the guardrail is down, scanned invoices through OCR, and (in `warden-ocr`) real Tesseract under a real Landlock jail. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
 
 ## Checks on every push (phase 10)
 
@@ -435,13 +462,14 @@ GitHub Actions runs `.github/workflows/ci.yml` on every push to every branch, so
 | --- | --- |
 | Cedar policies | The validator on `policies/` (scenario 06) and the policy service tests, including both bad changes being rejected (scenario 07) |
 | Ledger, OCR sandbox and control plane | Real Postgres 17 with the same database script Compose uses; the ledger tests; the OCR tests with real Tesseract and, where the runner's kernel has it, real Landlock; the kill switch, audit chain and spend tests |
+| Personal-data masking (Presidio) | `warden-pii` with real Presidio and spaCy on receipt text |
 | Agents, graph and API | The backend suite, which starts real ledger, policy and control processes; only the model is a test double |
 | Console | `npm ci`, the TypeScript check and the production build |
 | Compose files and secrets | The whole stack's Compose configuration, every published port bound to 127.0.0.1, no secrets in `.env.example`, no `.env` committed |
 
 Nothing in CI calls a real model or needs an API key. The evaluation gate, which does, stays a job you run on purpose (phase 2).
 
-To make GitHub refuse a merge while checks are red: **Settings**, then **Branches**, then **Add branch ruleset** (or **Add rule**) for `main`, then **Require status checks to pass**, and pick the five checks.
+To make GitHub refuse a merge while checks are red: **Settings**, then **Branches**, then **Add branch ruleset** (or **Add rule**) for `main`, then **Require status checks to pass**, and pick the checks.
 
 ## Known simplifications
 
@@ -472,7 +500,8 @@ These are deliberate and each one is removed by a named later phase.
 | 5 | Guardrail (rules + safety model), sandboxed OCR with Landlock (done); confidence gate, dry run and hold were built in phases 1-2 | 08, 11, 16, 17, 18 |
 | 6 | Keycloak sign-in, approval roles and tiers, four eyes (done) | identity |
 | 6b | Infisical secrets vault, SPIRE workload identity | 02 |
-| 7 | OpenMetadata, Presidio, Great Expectations | 03, 22 |
+| 7 | Presidio masking before every model, data map (done) | 03 |
+| 7b | Data-quality checks (Great Expectations), data catalogue (OpenMetadata) | 22 |
 | 8 | Per-agent gateway keys, route allowlists, daily token budgets, spend per agent (done) | 12 |
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry, Langfuse, Grafana | 24-27 |

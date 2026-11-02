@@ -1,5 +1,6 @@
 from .. import config
 from ..schemas import InvoiceExtraction, RunState
+from ..privacy import restore
 from . import Deps, audit
 
 # Common printed forms the model may return instead of an ISO code.
@@ -17,7 +18,11 @@ def normalize_currency(value: str | None) -> tuple[str, bool]:
 
 def run(state: RunState, deps: Deps) -> dict:
     loaded = deps.extraction_prompt
-    ext = deps.llm("extraction", config.ROUTE_ROUTINE, loaded.text, state["invoice_text"], InvoiceExtraction)
+    mapping = state.get("pii_mapping") or {}
+    # The model reads the masked text; the real values go back into its answer here, in code.
+    ext = deps.llm("extraction", config.ROUTE_ROUTINE, loaded.text, state.get("masked_text") or state["invoice_text"],
+                   InvoiceExtraction)
+    ext = InvoiceExtraction.model_validate(restore(ext.model_dump(), mapping))
 
     problems = []
     if not ext.vendor_name:

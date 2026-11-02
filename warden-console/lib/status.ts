@@ -24,6 +24,7 @@ export const FINISHED = new Set(["settled", "rejected", "blocked", "failed"]);
 
 export const STEP_LABEL: Record<string, string> = {
   ocr: "Sandboxed OCR read the image",
+  privacy: "Personal data masked",
   guardrail: "Guardrail screened the text",
   extraction: "Extraction agent read the invoice",
   risk_scoring: "Risk agent scored it",

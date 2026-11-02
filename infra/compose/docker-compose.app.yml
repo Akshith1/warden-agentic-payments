@@ -8,6 +8,10 @@ networks:
   ocr:
     name: warden-ocr
     internal: true
+  # Phase 7: the PII service's only network; no route to the internet.
+  pii:
+    name: warden-pii
+    internal: true
 
 volumes:
   control-data:
@@ -108,16 +112,34 @@ services:
           cpus: "1.0"
           pids: 64
 
+  # Phase 7: masks personal data before any model reads an invoice. Stateless, no internet.
+  warden-pii:
+    build: ./warden-pii
+    restart: unless-stopped
+    networks: [pii]
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=32m,uid=10001,gid=10001,mode=0700
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
   warden-backend:
     build: ./warden-backend
     restart: unless-stopped
-    networks: [default, ocr]   # the only service on both networks
+    networks: [default, ocr, pii]   # the only service on the internal networks
     depends_on:
       warden-ledger:
         condition: service_healthy
       warden-policy:
         condition: service_healthy
       warden-ocr:
+        condition: service_healthy
+      warden-pii:
         condition: service_healthy
       keycloak:
         condition: service_healthy
@@ -137,6 +159,7 @@ services:
       LEDGER_URL: http://warden-ledger:8000
       POLICY_URL: http://warden-policy:8000
       OCR_URL: http://warden-ocr:8000
+      PII_URL: http://warden-pii:8000
       CONTROL_URL: http://warden-control:8000
       KEYCLOAK_ISSUER: http://localhost:8180/realms/warden
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/warden/protocol/openid-connect/certs
