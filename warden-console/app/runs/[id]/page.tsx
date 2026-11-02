@@ -65,7 +65,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
               <dd>
                 {state.vendor
                   ? state.vendor.known
-                    ? `${state.vendor.payment_count} settled payments, average ${money(state.vendor.average_amount)}`
+                    ? `${state.vendor.payment_count} settled payment${state.vendor.payment_count === 1 ? "" : "s"}, average ${money(state.vendor.average_amount)}`
                     : "Never paid before"
                   : "Not checked yet"}
                 {state.vendor?.matched_alias ? (
