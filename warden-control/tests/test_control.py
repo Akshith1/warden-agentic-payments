@@ -133,3 +133,22 @@ def test_spend_per_agent_against_its_budget(api, tmp_path, monkeypatch):
     assert rows["approval"]["tokens"] == 0 and rows["approval"]["routes"] == ["warden-reasoning"]
     assert report["by_day"][0]["calls"] == 3
     assert api.get("/spend").status_code == 401  # the report needs a sign-in; the gateway's check doesn't
+
+
+def test_a_critical_data_quality_failure_stops_everything(api):
+    # Phase 7b: warden-quality posts its result; warnings are recorded, critical failures stop payments.
+    warning = {"critical_failed": [], "failed_checks": [{"id": "inbox-split", "severity": "warning",
+                                                         "title": "Every loaded receipt is in the train or the test split"}]}
+    api.post("/events", json={"type": "data_quality", "actor": "schedule", "payload": warning})
+    assert api.get("/status").json()["global_stop"] is False
+    critical = {"critical_failed": ["history-backed-by-ledger"], "failed_checks": [
+        {"id": "history-backed-by-ledger", "severity": "critical", "count": 2,
+         "title": "Every Warden payment in vendor history matches a ledger payment of the same amount"}]}
+    api.post("/events", json={"type": "data_quality", "actor": "schedule", "payload": critical})
+    status = api.get("/status").json()
+    assert status["global_stop"] and status["global"]["by"] == "watchdog"
+    assert status["global"]["reason"] == ("data-quality check failed: Every Warden payment in vendor history "
+                                          "matches a ledger payment of the same amount")
+    api.post("/kill-switch/reset", json={}, headers=RAJESH)
+    api.post("/events", json={"type": "data_quality", "actor": "schedule", "payload": critical})
+    assert api.get("/status").json()["global_stop"] is True   # still wrong at the next check: stops again
