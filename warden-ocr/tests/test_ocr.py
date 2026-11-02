@@ -73,6 +73,11 @@ def test_the_jail_refuses_writes_reads_and_network(tmp_path):
              f"    except OSError:\n        print('REFUSED')\n"
              f"print(sorted(os.listdir('{tmp_path}')))\n")
     root = Path(__file__).resolve().parents[1]
-    out = subprocess.run([sys.executable, "-m", "app.jail", str(tmp_path), "--", sys.executable, "-c", probe],
+    # The probe runs inside the jail, which can read only system folders such as /usr. A
+    # virtualenv's or a CI runner's Python lives elsewhere, so the probe uses a system one.
+    inner = next((p for p in ("/usr/bin/python3", "/usr/local/bin/python3") if Path(p).exists()), None)
+    if inner is None:
+        pytest.skip("no system Python under /usr to run the probe inside the jail")
+    out = subprocess.run([sys.executable, "-m", "app.jail", str(tmp_path), "--", inner, "-c", probe],
                          capture_output=True, text=True, cwd=root)
     assert out.stdout.split() == ["REFUSED", "REFUSED", "REFUSED", "[]"], out.stderr

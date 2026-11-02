@@ -1,0 +1,147 @@
+# Phase 10: every push to any branch runs all of this, so a pull request shows the
+# result for its latest commit. A red cross means something below failed; merge on green.
+name: checks
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  policies:
+    name: Cedar policies (scenarios 06 and 07)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
+      - run: pip install -r warden-policy/requirements.txt -r warden-policy/requirements-dev.txt
+      - name: The policies in this commit are accepted
+        working-directory: warden-policy
+        run: python -m app.validate ../policies
+      - name: Policy service tests, including both bad changes being rejected
+        working-directory: warden-policy
+        run: pytest -q
+
+  services:
+    name: Ledger, OCR sandbox and control plane
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_PASSWORD: ci-postgres }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPASSWORD: ci-postgres
+      POSTGRES_USER: postgres
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      PGPASS_WARDEN_LEDGER: ci-ledger
+      PGPASS_WARDEN_BACKEND: ci-backend
+      PGPASS_LITELLM: ci-litellm
+      PGPASS_MLFLOW: ci-mlflow
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
+      - name: Create the service databases with the same script Compose uses
+        run: sh infra/postgres-init/01-create-service-databases.sh
+      - name: Tesseract for the OCR tests
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends tesseract-ocr tesseract-ocr-eng
+      - run: |
+          pip install -r warden-ledger/requirements.txt -r warden-ocr/requirements.txt \
+                      -r warden-control/requirements.txt -r warden-ledger/requirements-dev.txt
+      - name: Ledger
+        working-directory: warden-ledger
+        run: pytest -q
+      - name: OCR sandbox (real Tesseract; the Landlock tests skip if the runner's kernel has none)
+        working-directory: warden-ocr
+        run: |
+          python -c "from app import landlock; print('Landlock ABI on this runner:', landlock.abi_version())"
+          pytest -q -rs
+      - name: Control plane (kill switch, audit chain, spend)
+        working-directory: warden-control
+        run: pytest -q
+
+  backend:
+    name: Agents, graph and API
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_PASSWORD: ci-postgres }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPASSWORD: ci-postgres
+      POSTGRES_USER: postgres
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      PGPASS_WARDEN_LEDGER: ci-ledger
+      PGPASS_WARDEN_BACKEND: ci-backend
+      PGPASS_LITELLM: ci-litellm
+      PGPASS_MLFLOW: ci-mlflow
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
+      - run: sh infra/postgres-init/01-create-service-databases.sh
+      - name: Install the backend and the services its tests start (ledger, policy, control)
+        run: |
+          pip install -r warden-backend/requirements.txt -r warden-backend/requirements-eval.txt \
+                      -r warden-ledger/requirements.txt -r warden-policy/requirements.txt \
+                      -r warden-control/requirements.txt -r warden-backend/requirements-dev.txt
+      - name: Tests (the model is a test double; MLflow tests skip without a server)
+        working-directory: warden-backend
+        run: pytest -q -rs
+
+  console:
+    name: Console type check and build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "22", cache: npm, cache-dependency-path: warden-console/package-lock.json }
+      - working-directory: warden-console
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run build
+
+  stack:
+    name: Compose files and secrets
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: The whole stack's Compose configuration is valid
+        run: |
+          cp .env.example .env
+          python3 infra/scripts/fill-secrets.py
+          sed -i 's/^OPENAI_API_KEY=$/OPENAI_API_KEY=ci-placeholder/; s/^GROQ_API_KEY=$/GROQ_API_KEY=ci-placeholder/' .env
+          docker compose --project-name warden --project-directory . --env-file .env \
+            -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.model.yml \
+            -f infra/compose/docker-compose.data.yml -f infra/compose/docker-compose.identity.yml \
+            -f infra/compose/docker-compose.app.yml config -q
+      - name: Every published port listens on 127.0.0.1 only
+        run: |
+          if grep -nE '^\s*- "[0-9]+:[0-9]+"' infra/compose/*.yml; then
+            echo "::error::a port above is published on every network interface; bind it to 127.0.0.1"; exit 1
+          fi
+      - name: No secrets in .env.example, and no .env committed
+        run: |
+          if grep -nE '^(POSTGRES_PASSWORD|PGPASS_[A-Z_]+|LITELLM_MASTER_KEY|LEDGER_WRITE_KEY|VENDOR_LOOKUP_KEY|KEYCLOAK_ADMIN_PASSWORD|OPENAI_API_KEY|GROQ_API_KEY)=.+' .env.example; then
+            echo "::error::.env.example must leave secrets empty; infra/scripts/fill-secrets.py fills them"; exit 1
+          fi
+          if git ls-files --error-unmatch .env 2>/dev/null; then echo "::error::.env is committed"; exit 1; fi
