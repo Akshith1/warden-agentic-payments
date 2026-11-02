@@ -38,6 +38,7 @@ export function plainReason(reason: string | null | undefined): string | null {
 export function shortReason(reason: string | null | undefined): string | null {
   const plain = plainReason(reason);
   if (plain?.startsWith("kill switch:")) return "Stopped by the kill switch. Retry once a controller resumes payments.";
+  if (plain?.startsWith("guardrail:")) return "Guardrail: instructions hidden in the document. No agent read it; open the run for the words found.";
   if (!plain || !plain.startsWith("error:")) return plain;
   const code = plain.match(/Error code: (\d{3})/)?.[1];
   if (/no credits remaining|insufficient_quota/i.test(plain)) return "Model provider: out of API credit. Add credit, then retry.";
