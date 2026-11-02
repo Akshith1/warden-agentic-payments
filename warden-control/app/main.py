@@ -9,6 +9,7 @@ People trip and reset it from the console with their Keycloak sign-in:
 approvers and controllers may stop, only controllers may resume. It also
 trips by itself (see `watch`)."""
 import json
+import os
 import re
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -43,6 +44,15 @@ class Event(BaseModel):
     run_id: str | None = None
     actor: str | None = Field(default=None, max_length=200)
     payload: dict = Field(default_factory=dict)
+
+
+class Spend(BaseModel):
+    agent: str = Field(min_length=1, max_length=64)
+    route: str | None = None
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
+    at: str
 
 
 class Trip(BaseModel):
@@ -125,3 +135,30 @@ def audit(limit: int = 100, run_id: str | None = None):
 @app.get("/audit/verify", dependencies=[Depends(ANYONE)])
 def verify():
     return state.store.verify()
+
+
+# ---- spend per agent (phase 8): written by the LLM gateway after every call ----
+
+@app.post("/spend", status_code=201)
+def add_spend(s: Spend):
+    state.store.add_spend(s.agent, s.route, s.prompt_tokens, s.completion_tokens, s.cost_usd, s.at)
+    return {"ok": True}
+
+
+@app.get("/spend/today")
+def spend_today(agent: str):
+    """Read by the gateway before every call, to enforce the agent's daily budget."""
+    return state.store.spend_today(agent)
+
+
+@app.get("/spend", dependencies=[Depends(ANYONE)])
+def spend(days: int = 7):
+    """Per agent: today's use against its budget, and the last `days` days by route."""
+    import yaml
+    limits = {}
+    if os.path.exists(config.AGENTS_FILE):
+        with open(config.AGENTS_FILE) as f:
+            limits = yaml.safe_load(f)["agents"]
+    today = [state.store.spend_today(a) | {"daily_tokens": rules["daily_tokens"], "routes": rules["routes"]}
+             for a, rules in limits.items()]
+    return {"today": today, "by_day": state.store.spend_by_day(min(max(days, 1), 90))}

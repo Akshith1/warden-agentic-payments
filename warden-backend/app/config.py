@@ -1,7 +1,9 @@
 import os
 
 LITELLM_URL = os.environ.get("LITELLM_URL", "http://litellm:4000")
-# Phase 1 uses one gateway key; phase 8 replaces it with one budget-capped key per agent.
+# Phase 8: one gateway key per agent, generated into the agent-keys volume. LITELLM_API_KEY is
+# only a fallback for local runs without that volume.
+AGENT_KEYS_FILE = os.environ.get("AGENT_KEYS_FILE", "/run/agent-keys/agent-keys.json")
 LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "")
 
 ROUTE_REASONING = "warden-reasoning"

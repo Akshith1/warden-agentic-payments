@@ -13,3 +13,6 @@ CANARY_VENDORS = [v.strip().upper() for v in os.environ.get("CANARY_VENDORS", "C
                   if v.strip()]
 DENIAL_LIMIT = int(os.environ.get("DENIAL_LIMIT", "5"))
 DENIAL_WINDOW_MINUTES = int(os.environ.get("DENIAL_WINDOW_MINUTES", "10"))
+
+# Phase 8: the gateway's per-agent rules, shown next to the spend (same file the gateway reads).
+AGENTS_FILE = os.environ.get("WARDEN_AGENTS_FILE", "/etc/warden/agents.yaml")
