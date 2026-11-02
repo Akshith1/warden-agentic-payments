@@ -80,3 +80,13 @@ def test_emails_are_masked_with_no_writable_disk_and_no_internet(api, monkeypatc
     monkeypatch.setattr(socket.socket, "connect", no_network)
     out = masked(api, "Send the remittance advice to accounts@kestrel-freight.com.my today.")
     assert "kestrel-freight" not in out["masked"] and out["counts"] == {"EMAIL_ADDRESS": 1}
+
+
+@pytest.mark.parametrize("address", ["siti.aminah@kestrelprint.example", "ops@vendor.internal",
+                                     "Accounts.Team+inv@kestrel-freight.com.my"])
+def test_any_email_is_masked_whatever_its_domain(api, address):
+    # Live phase 7 run: Presidio's own check left siti.aminah@kestrelprint.example unmasked,
+    # because .example is not a public domain ending.
+    out = masked(api, f"Queries: {address}  Tel: 07-388 2218")
+    assert address not in out["masked"] and out["counts"]["EMAIL_ADDRESS"] == 1
+    assert out["mapping"]["<EMAIL_ADDRESS_1>"] == address
