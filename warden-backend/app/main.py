@@ -17,6 +17,7 @@ from . import config
 from .agents import Deps
 from .agents.policy_check import payment_facts
 from .auth import User, require
+from .control_client import KillSwitchOn
 from .graph import build_graph
 from .prompt_registry import load_extraction_prompt
 
@@ -58,6 +59,8 @@ async def lifespan(_app):
     with rt.pool.connection() as conn:
         conn.execute(RUNS_TABLE)
         conn.execute("ALTER TABLE runs ADD COLUMN IF NOT EXISTS submitted_by TEXT")  # phase 6
+        # Phase 9: how many trail entries of this run are already in the audit log.
+        conn.execute("ALTER TABLE runs ADD COLUMN IF NOT EXISTS audited INT NOT NULL DEFAULT 0")
         # Phase 1 recorded provider errors as 'blocked'; relabel them so they can be retried.
         conn.execute("UPDATE runs SET status = 'failed' WHERE status = 'blocked' AND status_reason LIKE 'error:%%'")
     rt.workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="run")
@@ -107,10 +110,48 @@ def _sync(run_id: str, values: dict) -> None:
         )
 
 
+# Who acted at each step, for the audit log's "who" column.
+STEP_ACTOR = {"ocr": "ocr-sandbox", "guardrail": "guardrail", "extraction": "extraction", "risk_scoring": "risk-scoring",
+              "approval": "approval", "critic": "critic", "dry_run": "payment-execution",
+              "settlement_hold": "payment-execution", "commit": "payment-execution"}
+
+
+def _record_steps(run_id: str, values: dict) -> None:
+    """Copies new trail entries into the hash-chained audit log, in order, each once.
+    If the control plane is down the entries wait and go with the next update."""
+    trail = values.get("audit_trail") or []
+    with rt.pool.connection() as conn:
+        row = conn.execute("SELECT audited FROM runs WHERE run_id = %s", (run_id,)).fetchone()
+    done = row["audited"] if row else len(trail)
+    ext = values.get("extraction") or {}
+    for i in range(done, len(trail)):
+        entry = trail[i]
+        actor = entry.get("approver") or entry.get("principal") or STEP_ACTOR.get(entry["step"], entry["step"])
+        try:
+            rt.deps.control.record("run_step", entry | {"vendor": ext.get("vendor_name"),
+                                                        "amount": ext.get("total_amount")},
+                                   run_id=run_id, actor=str(actor))
+        except Exception:
+            log.warning("audit log unreachable; %d step(s) of run %s will be sent later", len(trail) - i, run_id)
+            return
+        with rt.pool.connection() as conn:
+            conn.execute("UPDATE runs SET audited = %s WHERE run_id = %s", (i + 1, run_id))
+
+
 def _drive(run_id: str, graph_input) -> None:
     try:
         for values in rt.graph.stream(graph_input, _config(run_id), stream_mode="values"):
             _sync(run_id, values)
+            _record_steps(run_id, values)
+    except KillSwitchOn as exc:
+        # Not an error in the run: someone (or the watchdog) stopped payments. Retry after the reset.
+        with rt.pool.connection() as conn:
+            conn.execute("UPDATE runs SET status = 'failed', status_reason = %s, updated_at = now() "
+                         "WHERE run_id = %s", (f"kill switch: {exc}"[:1000], run_id))
+        try:
+            rt.deps.control.record("run_stopped", {"reason": str(exc)}, run_id=run_id, actor="kill-switch")
+        except Exception:
+            log.warning("could not record the stop of run %s", run_id)
     except Exception as exc:
         # A crashed run must not look like it is still working. 'failed' (not 'blocked'):
         # nothing decided against this invoice; a provider or infrastructure error stopped it,
@@ -167,6 +208,10 @@ def _start(initial: dict, user: User) -> dict:
     with rt.pool.connection() as conn:
         conn.execute("INSERT INTO runs (run_id, status, source, submitted_by) VALUES (%s, 'submitted', %s, %s)",
                      (run_id, initial["source"], user.username))
+    try:
+        rt.deps.control.record("run_submitted", {"source": initial["source"]}, run_id=run_id, actor=user.username)
+    except Exception:
+        log.warning("could not record the submission of run %s", run_id)
     rt.workers.submit(_drive, run_id, initial | {"run_id": run_id, "submitted_by": user.username,
                                                  "status": "submitted", "audit_trail": []})
     return {"run_id": run_id, "status": "submitted"}
@@ -221,6 +266,11 @@ def resume(run_id: str, req: ResumeRequest, user: User = Depends(DECIDER)):
         grant = rt.deps.policy.authorize(("User", user.username), "ApprovePayment",
                                          payment=payment_facts(snapshot.values), roles=sorted(user.roles))
         if grant["decision"] != "Allow":
+            try:  # refusals go on the record too
+                rt.deps.control.record("approval_refused", {"reasons": grant["reasons"], "rules": grant["policies"]},
+                                       run_id=run_id, actor=user.username)
+            except Exception:
+                log.warning("could not record a refused approval on run %s", run_id)
             raise HTTPException(status_code=403, detail="you can't approve this one: " + "; ".join(grant["reasons"]))
     if req.same_vendor_id is not None:
         _confirm_alias(run_id, snapshot.values, req, user)

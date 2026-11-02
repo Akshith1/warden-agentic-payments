@@ -37,6 +37,7 @@ export function plainReason(reason: string | null | undefined): string | null {
 // One line for the Runs list. Provider errors are pages of JSON; the run page keeps the full text.
 export function shortReason(reason: string | null | undefined): string | null {
   const plain = plainReason(reason);
+  if (plain?.startsWith("kill switch:")) return "Stopped by the kill switch. Retry once a controller resumes payments.";
   if (!plain || !plain.startsWith("error:")) return plain;
   const code = plain.match(/Error code: (\d{3})/)?.[1];
   if (/no credits remaining|insufficient_quota/i.test(plain)) return "Model provider: out of API credit. Add credit, then retry.";

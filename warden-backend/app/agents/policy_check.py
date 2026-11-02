@@ -5,6 +5,7 @@ code rules in risk scoring and approval are the first check; this is the second,
 independent one: different code, different service, rules written as policy.
 When it says no to an agent, the run goes to a person with the policy's reasons.
 When it says no to a person, the run stops."""
+from ..control_client import KillSwitchOn
 from ..schemas import RunState
 from . import Deps, audit
 from .risk_scoring import remit_changed
@@ -32,6 +33,8 @@ def run(state: RunState, deps: Deps) -> dict:
     # A person's roles come from their verified login, recorded by the API when they decided.
     roles = human.get("roles") or [] if by_person else []
     result = deps.policy.authorize(principal, "ApprovePayment", payment=payment_facts(state), roles=roles)
+    if result.get("kill_switch"):
+        raise KillSwitchOn(result["reasons"][0])
     allowed = result["decision"] == "Allow"
     facts = result.get("facts", {})
     trail = audit("policy", principal=f"{principal[0]}:{principal[1]}", action="ApprovePayment",

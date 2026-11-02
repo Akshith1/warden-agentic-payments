@@ -21,6 +21,8 @@ from .policyset import Rejected, load
 POLICY_DIR = os.environ.get("POLICY_DIR", "/policies")
 LEDGER_URL = os.environ.get("LEDGER_URL", "http://warden-ledger:8000")
 VENDOR_LOOKUP_KEY = os.environ.get("VENDOR_LOOKUP_KEY", "")
+CONTROL_URL = os.environ.get("CONTROL_URL", "http://warden-control:8000")
+MONEY_ACTIONS = {"ApprovePayment", "DryRunLedgerEntry", "CreateLedgerEntry", "RecordVendorPayment"}
 
 
 WINDOW_SECONDS = 24 * 3600
@@ -30,6 +32,7 @@ class State:
     policies = None
     digest = ""
     ledger: httpx.Client
+    control: httpx.Client
     # Agent approvals this service allowed, per vendor, for the rolling 24-hour limit.
     # The ledger only knows settled payments; without this, a burst of invoices
     # submitted together would all pass before the first one settles. Kept in
@@ -58,8 +61,10 @@ async def lifespan(_app):
         raise SystemExit(f"policy set rejected: {e}") from e
     state.digest = hashlib.sha256(state.policies.text.encode()).hexdigest()[:12]
     state.ledger = httpx.Client(base_url=LEDGER_URL, timeout=10)
+    state.control = httpx.Client(timeout=5)
     yield
     state.ledger.close()
+    state.control.close()
 
 
 app = FastAPI(title="warden-policy", lifespan=lifespan)
@@ -93,6 +98,27 @@ class AuthorizeRequest(BaseModel):
     vendor: str | None = None  # for LookupVendor and ConfirmVendorAlias
 
 
+def kill_switch(principal: "Principal", action: str) -> str | None:
+    """The reason a stop applies to this request, or None. Checked before Cedar: while the
+    switch is on, no rule can allow money to move. If the control plane can't be reached,
+    money doesn't move either."""
+    if action not in MONEY_ACTIONS and principal.type != "Agent":
+        return None
+    try:
+        r = state.control.get(f"{CONTROL_URL}/status", timeout=5)
+        r.raise_for_status()
+        status = r.json()
+    except httpx.HTTPError:
+        return "kill switch status unknown (control plane unreachable), so nothing may move" \
+            if action in MONEY_ACTIONS else None
+    if status["global_stop"] and action in MONEY_ACTIONS:
+        g = status["global"]
+        return f"kill switch is on: {g['reason']} (by {g['by']})"
+    if principal.type == "Agent" and principal.id in status["paused_agents"]:
+        return f"the {principal.id} agent is paused by the kill switch"
+    return None
+
+
 def vendor_history(name: str) -> dict:
     r = state.ledger.get("/vendors/lookup", params={"name": name}, headers={"X-API-Key": VENDOR_LOOKUP_KEY})
     r.raise_for_status()
@@ -118,6 +144,10 @@ def policies():
 
 @app.post("/authorize")
 def authorize(req: AuthorizeRequest):
+    stopped = kill_switch(req.principal, req.action)
+    if stopped:
+        return {"decision": "Deny", "policies": ["kill-switch"], "reasons": [stopped], "errors": [],
+                "kill_switch": True, "facts": {}, "policy_set": state.digest}
     if req.payment:
         try:
             history = vendor_history(req.payment.vendor)
