@@ -1,0 +1,8 @@
+{
+  "_comment": "Trust tier per agent, held by the policy service and never taken from the caller. Only write-ledger may write to the ledger (policy 06).",
+  "extraction": "read-only",
+  "risk-scoring": "read-and-flag",
+  "approval": "decide",
+  "critic": "read-only",
+  "payment-execution": "write-ledger"
+}

@@ -28,6 +28,7 @@ export const STEP_LABEL: Record<string, string> = {
   approval: "Approval agent decided",
   critic: "Critic agent reviewed the decision",
   human_review: "A person decided",
+  policy: "Policy engine checked it",
   dry_run: "Ledger dry run",
   settlement_hold: "Settlement hold",
   commit: "Ledger commit",

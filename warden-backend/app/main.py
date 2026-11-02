@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import uuid
@@ -130,6 +131,19 @@ def health():
     }
 
 
+@app.get("/policies")
+def policies():
+    """The Cedar rules in force, relayed from the policy service, with each role's
+    capability manifest: both locks, for the console's governance page."""
+    from .capability import MANIFESTS
+    manifests = [json.loads(p.read_text()) for p in sorted(MANIFESTS.glob("*.json"))]
+    try:
+        cedar = rt.deps.policy.policies()
+    except Exception as exc:  # the page should say so, not fail
+        cedar = {"error": f"policy service unavailable: {exc}"}
+    return {"cedar": cedar, "capabilities": manifests}
+
+
 @app.post("/runs", status_code=202)
 def submit(req: SubmitRequest):
     run_id = str(uuid.uuid4())
@@ -186,8 +200,11 @@ def _confirm_alias(run_id: str, values: dict, req: ResumeRequest) -> None:
         raise HTTPException(status_code=422, detail="a vendor can only be linked when approving")
     if (values.get("vendor") or {}).get("known", True):
         raise HTTPException(status_code=409, detail="only a first-seen vendor can be linked to an existing one")
-    ok, result = rt.deps.ledger.confirm_alias(values["extraction"]["vendor_name"], req.same_vendor_id,
-                                              req.approver.strip(), run_id)
+    name = values["extraction"]["vendor_name"]
+    grant = rt.deps.policy.authorize(("User", req.approver.strip()), "ConfirmVendorAlias", vendor=name)
+    if grant["decision"] != "Allow":
+        raise HTTPException(status_code=403, detail="; ".join(grant["reasons"]))
+    ok, result = rt.deps.ledger_for("human-review").confirm_alias(name, req.same_vendor_id, req.approver.strip(), run_id)
     if not ok:  # the run stays pending_human, so the person can choose again
         raise HTTPException(status_code=409, detail=f"could not link the vendor: {result}")
 

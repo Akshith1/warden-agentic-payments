@@ -7,6 +7,7 @@ This repository is being built in phases (see [Roadmap](#roadmap)):
 - **Phase 1, the agent core:** four LLM agents and a deterministic payment executor run as one LangGraph workflow, on real invoice data, with human-in-the-loop approval and a real ledger. Run live on real models; see [the phase 1 live run](docs/live-runs/2026-10-phase-1.md).
 - **Phase 3, the console:** a web app at http://localhost:3100 to submit invoices, watch each agent's step as it happens, decide escalated invoices, retry failed runs, and see the ledger and the rules in force.
 - **Phase 3.5, the vendor master:** when an approver recognises a "first-seen" vendor as one already paid under another name, they link the two in the console. The link is stored as a confirmed alias, so both names share one payment history and one duplicate-invoice check. Nothing is ever matched automatically. See [Vendor aliases](#vendor-aliases-phase-35) and [the phase 3 and 3.5 live run](docs/live-runs/2026-11-phase-3.md).
+- **Phase 4, policies:** every approval and every ledger write is checked a second time by a separate Cedar policy service, with rules in readable files under `policies/`. The service adds a rule over time (no more than 3 agent-approved payments to one vendor in 24 hours) and refuses to start on a policy change that fails validation. Each role's capability manifest is a second, independent lock on the ledger. See [Policies](#policies-phase-4).
 - **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried. Run live, including the first fully automatic payment; see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md).
 
 ## How a payment flows today
@@ -23,9 +24,12 @@ Approval agent .......... auto_approve / escalate / reject, with a confidence sc
    |                      (over $5,000 or confidence < 0.75 -> human)
 Critic agent ............ second opinion from a different provider; any concrete concern -> human
    |
+Policy check ............ Cedar, in warden-policy: the same rules again, plus the 24-hour vendor limit
+   |                      (agents refused -> human, with the policy's reason)
 Human review ............ LangGraph interrupt(), durable in Postgres; resume with approve/reject
-   |
-Payment execution ....... no LLM: dry run -> `settling` for a 20 s hold -> double-entry commit
+   |                      -> policy check again, for the person
+Payment execution ....... no LLM: Cedar + capability manifest allow the write -> dry run
+                          -> `settling` for a 20 s hold -> double-entry commit
                           -> vendor history updated only after settlement
 ```
 
@@ -48,6 +52,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `warden-console` | Next.js console: runs, decisions, ledger, governance | http://localhost:3100 |
 | `warden-backend` | FastAPI + LangGraph agent runtime | http://localhost:8100/docs |
 | `warden-ledger` | Double-entry ledger, vendor master, payment history | http://localhost:8101/docs |
+| `warden-policy` | Cedar policy decision point; validates `policies/` at startup | http://localhost:8102/docs |
 | `litellm` | LLM gateway with the three routes | http://localhost:4000 |
 | `mlflow` | Prompt Registry and gate results | http://localhost:5500 |
 | `postgres` | One database and role per service | localhost:15432 |
@@ -125,6 +130,73 @@ Open http://localhost:3100 once the stack is up.
 
 The browser only talks to the console's own server, which relays a fixed list of backend endpoints and read-only ledger endpoints; the ledger key stays on the server, and the console cannot write to the ledger. Pages refresh by polling every 1.5 to 5 seconds rather than over a WebSocket, which is enough for runs that change every few seconds. The approver's name is typed in until phase 6 adds Keycloak logins.
 
+## Policies (phase 4)
+
+The rules that decide when agents may pay on their own were enforced in Python. Phase 4 writes them again as [Cedar](https://www.cedarpolicy.com) policies in `policies/`, served by a separate service, `warden-policy`. A payment needs both to agree: the code rules, then the policy check. Either one saying no sends the invoice to a person, with the reason in the trail.
+
+| File | Rule |
+| --- | --- |
+| `00-who-may-act.cedar` | Only the approval agent and people may approve; only people may link vendor names. Everything else is denied by default. |
+| `01-routine-amount.cedar` | Agents may not approve above 5,000.00. |
+| `02-vendor-history.cedar` | Agents may not approve a vendor with fewer than 2 settled payments. |
+| `03-ledger-currency.cedar` | Agents may not approve a currency other than MYR. |
+| `04-decision-quality.cedar` | Agents may not approve below 75% confidence, over the critic's objection, or to a changed pay-to account. |
+| `05-vendor-rate-limit.cedar` | Agents may not approve a 4th payment to one vendor within 24 hours. |
+| `06-ledger-write.cedar` | Only the payment-execution agent may write to the ledger. |
+| `07-vendor-lookup.cedar` | Only the risk agent and people may read vendor history. |
+
+How it is kept honest:
+
+- **Facts come from the ledger, not the caller.** The backend sends what the run knows (amount, currency, confidence, the critic's answer). The policy service looks up the vendor's history, payment count and recent payments itself. Agent trust tiers come from the service's own registry (`warden-policy/app/agents.json`), so a caller claiming `write-ledger` changes nothing.
+- **A rule over time.** Cedar judges one request and remembers nothing, so the service supplies the 24-hour count: the larger of the vendor's settled payments in the last 24 hours and the agent approvals it allowed in that window. The second number catches a burst submitted together, before any of it settles.
+- **Two locks on the ledger.** Each role has a capability manifest in `warden-backend/app/capabilities/`, and nodes reach the ledger only through a guard that checks it in plain code. Cedar checks the same writes independently, so neither a policy mistake nor a code mistake alone can give an agent the ledger.
+- **A bad change can't be served.** At startup the service validates the whole set: every file parses, the set matches the schema, no rule is wide open, every rule has an `@id`, every permit a `@summary` and every forbid a `@reason`, and 25 authorization cases give the expected answers. If any check fails, the service doesn't start. With no policy service, runs stop as `failed` and can be retried once it's back. They don't pay without it.
+- **Visible.** The console's Governance page lists every rule and every manifest, and each run's trail shows the policy check with the rule that decided it.
+
+### Try it (scenarios 06, 07, 09, 10 and 20 of the source project)
+
+Run these in PowerShell from the repository folder, with the stack up.
+
+**06, a policy set is accepted:**
+```powershell
+.\infra\scripts\compose.ps1 exec warden-policy python -m app.validate /policies
+```
+
+**07, a bad change is rejected.** These commands work on copies in `.scratch\` (gitignored), never on `policies\`. First, a rule that allows everything:
+```powershell
+New-Item -ItemType Directory -Force .scratch\bad-a | Out-Null
+Copy-Item policies\* .scratch\bad-a\
+Set-Content .scratch\bad-a\99-allow-everything.cedar "@id(`"oops`")`npermit (principal, action, resource);"
+.\infra\scripts\compose.ps1 exec warden-policy python -m app.validate /scratch/bad-a
+```
+Then a subtle one: valid Cedar, but agents could now pay up to 5,000,000.00:
+```powershell
+New-Item -ItemType Directory -Force .scratch\bad-b | Out-Null
+Copy-Item policies\* .scratch\bad-b\
+(Get-Content .scratch\bad-b\01-routine-amount.cedar) -replace '500000', '500000000' | Set-Content .scratch\bad-b\01-routine-amount.cedar
+.\infra\scripts\compose.ps1 exec warden-policy python -m app.validate /scratch/bad-b
+```
+Both print `REJECTED` with the reason.
+
+**09 and 10, agents can't reach past their role.** Ask Cedar whether the extraction agent may write to the ledger:
+```powershell
+$body = '{"principal":{"type":"Agent","id":"extraction"},"action":"CreateLedgerEntry","payment":{"amount":"10.00","currency":"MYR","vendor":"OJC Marketing Sdn Bhd"}}'
+Invoke-RestMethod -Method Post -Uri http://localhost:8102/authorize -ContentType "application/json" -Body $body
+```
+Then ask the second lock, the capability manifests:
+```powershell
+.\infra\scripts\compose.ps1 exec warden-backend python -m app.capability
+```
+Cedar returns `Deny`. The manifests deny every role except payment execution.
+
+**20, the 24-hour limit.** Submit four invoices from a vendor with history. The first three are normally paid by the agents (unless one of them escalates for its own reasons); the fourth goes to a person with "the vendor already had 3 payments approved in the last 24 hours":
+```powershell
+foreach ($n in 461..464) {
+  $text = "OJC Marketing Sdn Bhd`nTax Invoice No: OJC-2026-0$n`nDate: 02/11/2026`nPrinting paper A4 x 5   RM 42.50`nInk cartridge black x 1   RM 22.00`nTotal: RM 64.50"
+  Invoke-RestMethod -Method Post -Uri http://localhost:8100/runs -ContentType "application/json" -Body (@{invoice_text = $text} | ConvertTo-Json)
+}
+```
+
 ## Vendor aliases (phase 3.5)
 
 The same shop can be read under two names. In the phase 3 live run, a receipt from a vendor already paid as `TAN CHAY YEE *** COPY *** OJC MARKETING SDN BHD` came back as `TAN CHAY YEE OJC MARKETING SDN BHD`, so the ledger treated it as a vendor it had never paid.
@@ -194,10 +266,11 @@ export POSTGRES_HOST=localhost POSTGRES_PORT=15432
 export $(grep -E '^PGPASS_WARDEN_(LEDGER|BACKEND)=' .env | xargs)
 
 cd warden-ledger && pip install -r requirements.txt -r requirements-dev.txt && pytest -q && cd ..
-cd warden-backend && pip install -r requirements.txt -r requirements-dev.txt && pytest -q
+cd warden-policy && pip install -r requirements.txt -r requirements-dev.txt && pytest -q && cd ..
+cd warden-backend && pip install -r requirements.txt -r requirements-dev.txt && pytest -q   # starts the ledger and policy service itself
 ```
 
-They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused.
+They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
 
 ## Known simplifications
 
@@ -205,7 +278,9 @@ These are deliberate and each one is removed by a named later phase.
 
 - **Secrets live in `.env`.** Phase 6 moves the ledger write key into Infisical, fetched fresh before every payment.
 - **One gateway key for all agents.** Phase 8 gives each agent its own key, route allowlist and daily budget.
-- **Approval rules are enforced in code only.** Phase 4 adds Cedar as an independent second check, plus capability manifests.
+- **The approval rules are written twice**, in code (`config.py`) and in Cedar (`policies/`), on purpose: two independent checks. Changing a limit means changing both; the stricter one wins until they agree.
+- **The 24-hour limit's memory of in-flight approvals is in the policy service's memory.** After a restart only the ledger's settled payments count until new approvals come in. Phase 9's audit log is the durable record.
+- **Any person may approve any amount.** Approval tiers need real identities, which phase 6 (Keycloak) adds.
 - **Only the Extraction prompt is registry-managed.** It is the one the gate can score against labels. The Risk, Approval and Critic prompts are versioned in git; scoring them needs labelled fraud decisions, which no public dataset here provides.
 - **A promoted prompt takes effect on restart**, not live, matching how the backend loads it once at startup.
 - **No guardrail model, OCR sandbox or kill switch yet.** Phases 5 and 9.
@@ -219,7 +294,7 @@ These are deliberate and each one is removed by a named later phase.
 | 2 | MLflow prompt registry, DeepEval gate, vendor trust loop (done) | 04, 05, 21 |
 | 3 | Next.js console: submit, live run view, approval queue (done) | 01 from the browser |
 | 3.5 | Vendor master: human-confirmed aliases (done) | phase 3 live-run finding |
-| 4 | Cedar policies, temporal rate limit, capability manifests | 06, 07, 09, 10, 23 |
+| 4 | Cedar policies, 24-hour vendor limit, capability manifests (done) | 06, 07, 09, 10, 20 |
 | 5 | Guardrail model, sandboxed OCR (Landlock), confidence gate, dry run, hold | 08, 11, 16, 17, 18 |
 | 6 | Keycloak, SPIRE, Infisical | 02, 20 |
 | 7 | OpenMetadata, Presidio, Great Expectations | 03, 22 |
