@@ -263,3 +263,8 @@ table.lines { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
 @media (prefers-reduced-motion: reduce) {
   .stamp, .working::after { animation: none; }
 }
+
+/* Phase 7b: data quality */
+.quality { margin-bottom: 1.25rem; }
+.quality caption { text-align: left; font-weight: 600; padding: 0.5rem 0; }
+.quality td:nth-child(2), .quality td:nth-child(3) { white-space: nowrap; vertical-align: top; }

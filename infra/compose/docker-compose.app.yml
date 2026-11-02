@@ -128,6 +128,35 @@ services:
         limits:
           memory: 1g
 
+  # Phase 7b: Great Expectations checks on the ledger, vendor history and loaded data.
+  # Reads through a role that can only SELECT; stops payments only through the control plane.
+  # No published port: the console reaches it on the Docker network.
+  warden-quality:
+    build: ./warden-quality
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m,uid=10001,gid=10001,mode=0700
+    depends_on:
+      postgres:
+        condition: service_healthy
+      warden-control:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      PGPASS_WARDEN_QUALITY: ${PGPASS_WARDEN_QUALITY:?add PGPASS_WARDEN_QUALITY to .env (phase 7b)}
+      CONTROL_URL: http://warden-control:8000
+      QUALITY_INTERVAL_MINUTES: ${QUALITY_INTERVAL_MINUTES:-10}
+      KEYCLOAK_ISSUER: http://localhost:8180/realms/warden
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/warden/protocol/openid-connect/certs
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
   warden-backend:
     build: ./warden-backend
     restart: unless-stopped
@@ -192,6 +221,7 @@ services:
       # Browsers are sent to Keycloak at localhost:8180; this server exchanges codes and
       # fetches keys at keycloak:8080. Both must match infra/keycloak/realm-warden.json.
       CONTROL_URL: http://warden-control:8000
+      QUALITY_URL: http://warden-quality:8000
       KEYCLOAK_PUBLIC_URL: http://localhost:8180
       KEYCLOAK_INTERNAL_URL: http://keycloak:8080
       CONSOLE_URL: http://localhost:3100

@@ -1,5 +1,6 @@
 "use client";
 import { AgentBudgets } from "@/components/AgentBudgets";
+import { DataQuality } from "@/components/DataQuality";
 import { KillSwitch } from "@/components/KillSwitch";
 import { useLive } from "@/lib/useLive";
 
@@ -31,6 +32,7 @@ export default function GovernancePage() {
       {error && <p className="notice notice-error">{error}</p>}
       <KillSwitch />
       <AgentBudgets />
+      <DataQuality />
       {data && (
         <>
           <h2 className="section">Extraction prompt</h2>

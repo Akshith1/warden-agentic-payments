@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS invoice_inbox (
     ground_truth  JSONB NOT NULL,
     loaded_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Phase 7b: the data-quality service may read this table (and no other in this database).
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'warden_quality') THEN
+    GRANT SELECT ON invoice_inbox TO warden_quality;
+  END IF;
+END $$;
 """
 
 

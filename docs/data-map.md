@@ -23,6 +23,12 @@ Personal data masked by `warden-pii` (Presidio with spaCy, plus receipt-specific
 | Vendors, confirmed aliases, payment history | `warden_ledger` | Reference data from USAspending (public US federal awards); Warden's own settled payments |
 | Labelled receipts for the evaluation gate | `invoice_inbox` in `warden_backend` | SROIE and CORD public datasets |
 
+## Who reads the data to check it (phase 7b)
+
+| Reader | Can read | Can't read | What it keeps |
+| --- | --- | --- | --- |
+| `warden-quality` (role `warden_quality`, `SELECT` only, read-only sessions) | Every table in `warden_ledger`; `invoice_inbox` in `warden_backend` | Run state (LangGraph checkpoints, which hold unmasked invoices); Keycloak; the audit log | The latest result, in memory: per check a count and up to five row ids. Values only where they aren't personal (vendor names, split labels). Results with failures, changes, and every run a person asked for go to the audit log. |
+
 ## People, decisions and the record
 
 | Data | Where it lives | Notes |

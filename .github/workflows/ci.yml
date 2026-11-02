@@ -51,6 +51,7 @@ jobs:
       PGPASS_WARDEN_BACKEND: ci-backend
       PGPASS_LITELLM: ci-litellm
       PGPASS_MLFLOW: ci-mlflow
+      PGPASS_WARDEN_QUALITY: ci-quality
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -72,6 +73,40 @@ jobs:
           pytest -q -rs
       - name: Control plane (kill switch, audit chain, spend)
         working-directory: warden-control
+        run: pytest -q
+
+  quality:
+    name: Data quality (Great Expectations)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_PASSWORD: ci-postgres }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: ci-postgres
+      POSTGRES_USER: postgres
+      PGPASS_WARDEN_LEDGER: ci-ledger
+      PGPASS_WARDEN_BACKEND: ci-backend
+      PGPASS_LITELLM: ci-litellm
+      PGPASS_MLFLOW: ci-mlflow
+      PGPASS_WARDEN_QUALITY: ci-quality
+      GX_ANALYTICS_ENABLED: "False"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
+      - name: The init script creates the read-only role, and running it twice changes nothing
+        run: |
+          sh infra/postgres-init/01-create-service-databases.sh
+          sh infra/postgres-init/01-create-service-databases.sh
+      - run: pip install -r warden-quality/requirements.txt -r warden-quality/requirements-dev.txt
+      - name: Every check against real Postgres, including on a read-only filesystem
+        working-directory: warden-quality
         run: pytest -q
 
   pii:
@@ -104,6 +139,7 @@ jobs:
       PGPASS_WARDEN_BACKEND: ci-backend
       PGPASS_LITELLM: ci-litellm
       PGPASS_MLFLOW: ci-mlflow
+      PGPASS_WARDEN_QUALITY: ci-quality
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
