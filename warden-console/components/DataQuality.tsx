@@ -101,6 +101,12 @@ export function DataQuality() {
           </tbody>
         </table>
       ))}
+      <p className="muted small">
+        Optional: the data catalogue (OpenMetadata) describes these tables, tags their personal data and the ones
+        these checks guard, and shows where their rows come from. Start it with the <code>catalogue</code> profile,
+        then open <a href={process.env.NEXT_PUBLIC_CATALOGUE_URL ?? "http://localhost:8585"} target="_blank"
+        rel="noreferrer">the catalogue</a>.
+      </p>
     </section>
   );
 }

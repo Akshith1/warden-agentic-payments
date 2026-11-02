@@ -69,6 +69,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `keycloak` | Sign-in for people: the `warden` realm, roles and users | http://localhost:8180 (admin at `/admin`) |
 | `warden-control` | Kill switch and hash-chained audit log | http://localhost:8103/status |
 | `warden-quality` | Great Expectations checks on the ledger, vendor history and loaded data; read-only | (none: no published port) |
+| `catalogue` | Optional data catalogue (OpenMetadata), started with the `catalogue` profile | http://localhost:8585 |
 | `litellm` | LLM gateway with the three routes; one key, route list and daily budget per agent | http://localhost:4000 |
 | `mlflow` | Prompt Registry and gate results | http://localhost:5500 |
 | `postgres` | One database and role per service, plus a read-only role for the data-quality checks | localhost:15432 |
@@ -218,7 +219,42 @@ Then, on the Governance page, press **Check now**. To see a critical check stop 
 .\infra\scripts\compose.ps1 exec postgres psql -U postgres -d warden_ledger -c "DELETE FROM historical_payments WHERE external_ref LIKE 'FORGED-%'"
 ```
 
-Not yet: a data catalogue (OpenMetadata).
+## Data catalogue (phase 7b, optional)
+
+[OpenMetadata](https://open-metadata.org/) 2.0.7 describes Warden's data for people who weren't there when it was built: every ledger table and `invoice_inbox`, with column types and descriptions, which columns hold personal data, which tables a critical data-quality check guards, and where rows come from (lineage).
+
+| In the catalogue | Where it comes from |
+| --- | --- |
+| Tables, columns, types | Read from Postgres as `warden_quality`, the read-only role: the ledger and `invoice_inbox`, nothing else |
+| Descriptions | Postgres comments written by the code that creates each table (`warden-ledger/app/db.py`, `warden-data-loader/loader/db.py`) |
+| `PII.Sensitive` / `PII.NonSensitive` on columns | [`classify.py`](warden-catalogue/catalogue/classify.py), kept in step with the [data map](docs/data-map.md) by a test |
+| `Warden.CriticalCheck` on tables | The tables `warden-quality`'s critical checks read; a test keeps the two lists equal |
+| Lineage: postings → accounts, transactions → historical_payments | `classify.py`, with the reason on each link |
+
+It holds metadata only: no profiler and no sample rows, so no personal values reach it.
+
+It is optional, because it needs about 4 GB more memory while running (a search engine and a Java server). It runs as a Compose profile and starts only when asked:
+
+```powershell
+python infra/scripts/fill-secrets.py      # adds PGPASS_OPENMETADATA, OPENMETADATA_ADMIN_PASSWORD, OPENMETADATA_FERNET_KEY
+.\infra\scripts\compose.ps1 up -d postgres
+.\infra\scripts\compose.ps1 exec postgres sh /docker-entrypoint-initdb.d/01-create-service-databases.sh
+.\infra\scripts\compose.ps1 up -d --build warden-ledger      # writes the table descriptions
+.\infra\scripts\compose.ps1 --profile catalogue up -d --build
+.\infra\scripts\compose.ps1 --profile catalogue logs -f catalogue-ingest
+```
+
+The first start takes a few minutes (database migrations, then the server). The `catalogue-ingest` job waits for it, reads both databases, applies the tags and lineage, and ends with "Done". Then open http://localhost:8585 and sign in as `admin@open-metadata.org` with `OPENMETADATA_ADMIN_PASSWORD` from `.env`. Run the job again after a schema change:
+
+```powershell
+.\infra\scripts\compose.ps1 --profile catalogue run --rm catalogue-ingest
+```
+
+Stop it, keeping its data, with `.\infra\scripts\compose.ps1 --profile catalogue stop`.
+
+Compared with OpenMetadata's own Compose file: its database is in Warden's Postgres instead of a second one; there is no Airflow (ingestion is the one-shot job); its signing keys, first admin password and encryption key are generated for this install instead of the defaults every install shares; self sign-up is off; and only the web UI is published, on 127.0.0.1.
+
+The admin password is set only when the catalogue's database is first created. To start the catalogue over: `.\infra\scripts\compose.ps1 --profile catalogue down`, then `.\infra\scripts\compose.ps1 exec postgres psql -U postgres -c "DROP DATABASE openmetadata"` and `docker volume rm warden_catalogue-search-data`, then the steps above from the init script.
 
 ## Model access per agent (phase 8)
 
@@ -543,7 +579,7 @@ These are deliberate and each one is removed by a named later phase.
 | 6 | Keycloak sign-in, approval roles and tiers, four eyes (done) | identity |
 | 6b | Infisical secrets vault, SPIRE workload identity | 02 |
 | 7 | Presidio masking before every model, data map (done) | 03 |
-| 7b | Data-quality checks with Great Expectations; critical failures stop payments (done). Data catalogue (OpenMetadata) | 22 |
+| 7b | Data-quality checks with Great Expectations; critical failures stop payments. Optional data catalogue (OpenMetadata) with personal-data tags and lineage (done) | 22 |
 | 8 | Per-agent gateway keys, route allowlists, daily token budgets, spend per agent (done) | 12 |
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry, Langfuse, Grafana | 24-27 |
