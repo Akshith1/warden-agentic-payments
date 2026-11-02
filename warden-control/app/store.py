@@ -28,6 +28,16 @@ CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
 BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
+CREATE TABLE IF NOT EXISTS spend (
+    at                 TEXT NOT NULL,
+    day                TEXT NOT NULL,
+    agent              TEXT NOT NULL,
+    route              TEXT,
+    prompt_tokens      INTEGER NOT NULL,
+    completion_tokens  INTEGER NOT NULL,
+    cost_usd           REAL
+);
+CREATE INDEX IF NOT EXISTS spend_agent_day ON spend (agent, day);
 CREATE TABLE IF NOT EXISTS switches (
     scope      TEXT NOT NULL,
     target     TEXT NOT NULL,
@@ -115,3 +125,25 @@ class Store:
         rows = self.db.execute("SELECT * FROM audit WHERE type = ? ORDER BY seq DESC LIMIT 500", (type_,)).fetchall()
         return [dict(r) | {"payload": json.loads(r["payload"])} for r in rows
                 if datetime.fromisoformat(r["at"]).timestamp() >= cutoff]
+
+    # ---- spend per agent (phase 8) ----
+    def add_spend(self, agent: str, route: str | None, prompt_tokens: int, completion_tokens: int,
+                  cost_usd: float | None, at: str) -> None:
+        day = datetime.fromisoformat(at).astimezone(timezone.utc).date().isoformat()
+        with self.lock:
+            self.db.execute("INSERT INTO spend VALUES (?,?,?,?,?,?,?)",
+                            (at, day, agent, route, prompt_tokens, completion_tokens, cost_usd))
+
+    def spend_today(self, agent: str) -> dict:
+        day = datetime.now(timezone.utc).date().isoformat()
+        r = self.db.execute("SELECT count(*) AS calls, coalesce(sum(prompt_tokens + completion_tokens), 0) AS tokens, "
+                            "sum(cost_usd) AS cost FROM spend WHERE agent = ? AND day = ?", (agent, day)).fetchone()
+        return {"agent": agent, "day": day, "calls": r["calls"], "tokens": r["tokens"], "cost_usd": r["cost"]}
+
+    def spend_by_day(self, days: int = 7) -> list[dict]:
+        rows = self.db.execute(
+            """SELECT day, agent, route, count(*) AS calls, sum(prompt_tokens) AS prompt_tokens,
+                      sum(completion_tokens) AS completion_tokens, sum(cost_usd) AS cost_usd
+               FROM spend WHERE day >= date('now', ?) GROUP BY day, agent, route ORDER BY day DESC, agent""",
+            (f"-{days - 1} days",)).fetchall()
+        return [dict(r) for r in rows]
