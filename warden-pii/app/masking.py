@@ -32,13 +32,18 @@ _LABELLED_NAME = Pattern("labelled name",
                          r"[A-Za-z][A-Za-z.' ]{1,40}[A-Za-z]", 0.9)
 _ACCOUNT = Pattern("bank account", r"(?i)(?<=\b(?:account|acct|a/c)(?:\s*(?:no|number))?\.?\s*[:#]?\s*)"
                                    r"\d[\d\- ]{6,22}\d", 0.9)
+# Anything shaped like an email address. Presidio's own email check also requires the domain
+# ending to be a real public one (.com, .my), so addresses on reserved or internal endings
+# (.example, .internal, .local) slipped through to the models. For masking, the shape is enough.
+_EMAIL = Pattern("email address", r"(?i)\b[a-z0-9._%+\-]+@[a-z0-9\-]+(?:\.[a-z0-9\-]+)+\b", 0.9)
 _NRIC = Pattern("Malaysian IC", r"\b\d{6}-\d{2}-\d{4}\b", 0.85)
 
 
-# Presidio's email check asks tldextract whether a domain is real. By default tldextract
-# keeps a cache on disk (and takes a lock file even to read it) and may fetch the list of
-# domains from the internet. This service has a read-only filesystem and no internet route,
-# so use the copy of the list that ships inside tldextract: no cache, no lock, no network.
+# Presidio's email check (replaced below) asks tldextract whether a domain is real. By default
+# tldextract keeps a cache on disk (and takes a lock file even to read it) and may fetch the
+# list of domains from the internet. This service has a read-only filesystem and no internet
+# route, so if anything still calls it, it uses the copy of the list that ships inside
+# tldextract: no cache, no lock, no network.
 _tld.TLD_EXTRACTOR = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=())
 
 
@@ -46,6 +51,9 @@ def build_analyzer() -> AnalyzerEngine:
     nlp = NlpEngineProvider(nlp_configuration={
         "nlp_engine_name": "spacy", "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}]}).create_engine()
     analyzer = AnalyzerEngine(nlp_engine=nlp, supported_languages=["en"])
+    analyzer.registry.remove_recognizer("EmailRecognizer")
+    analyzer.registry.add_recognizer(PatternRecognizer(supported_entity="EMAIL_ADDRESS", patterns=[_EMAIL],
+                                                       name="AnyDomainEmailRecognizer"))
     analyzer.registry.add_recognizer(PatternRecognizer(supported_entity="PERSON", patterns=[_LABELLED_NAME],
                                                        name="LabelledNameRecognizer"))
     analyzer.registry.add_recognizer(PatternRecognizer(supported_entity="BANK_ACCOUNT", patterns=[_ACCOUNT],
