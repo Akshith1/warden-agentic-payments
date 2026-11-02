@@ -35,8 +35,9 @@ def human_review(state: RunState, deps: Deps) -> dict:
     return update
 
 
-def mark_pending(_state: RunState) -> dict:
-    return {"status": "pending_human"}
+def mark_pending(state: RunState) -> dict:
+    # The reasons go into status_reason too, so the Runs list can say why a run is waiting.
+    return {"status": "pending_human", "status_reason": "; ".join(state.get("escalation_reasons") or [])}
 
 
 def after_extraction(state: RunState) -> str:
