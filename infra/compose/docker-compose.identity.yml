@@ -11,9 +11,21 @@ volumes:
   keycloak-data:
 
 services:
+  # A new Docker volume belongs to root; Keycloak runs as uid 1000 and must write its
+  # database and temporary files there. This one-off step hands the folder over first.
+  keycloak-data-init:
+    image: alpine:3.22
+    command: ["sh", "-c", "mkdir -p /data/h2 /data/tmp && chown -R 1000:0 /data && chmod -R g+rwX /data"]
+    volumes:
+      - keycloak-data:/data
+    restart: "no"
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.6.4
     restart: unless-stopped
+    depends_on:
+      keycloak-data-init:
+        condition: service_completed_successfully
     command: ["start-dev", "--import-realm", "--health-enabled=true"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
@@ -25,7 +37,7 @@ services:
       KC_HTTP_ENABLED: "true"
     volumes:
       - ./infra/keycloak/realm-warden.json:/opt/keycloak/data/import/realm-warden.json:ro
-      - keycloak-data:/opt/keycloak/data/h2
+      - keycloak-data:/opt/keycloak/data
     ports:
       - "127.0.0.1:8180:8080"
     healthcheck:
