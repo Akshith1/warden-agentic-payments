@@ -34,6 +34,10 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/warden/warden.json
+      # Store a zero at each counter's start time (OpenTelemetry sends it). Without it Prometheus
+      # takes a counter's first reading as its baseline, so a run counted before the first export
+      # never shows as an increase: the phase 9b live run showed 0 runs after two runs.
+      PROMETHEUS_EXTRA_ARGS: --enable-feature=created-timestamp-zero-ingestion
     volumes:
       - lgtm-data:/data
       - ./infra/grafana/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/warden:ro
