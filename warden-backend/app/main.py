@@ -72,6 +72,11 @@ class SubmitRequest(BaseModel):
     source: Literal["paste", "ocr", "dataset"] = "paste"
 
 
+class ImageSubmitRequest(BaseModel):
+    image_base64: str = Field(min_length=1, max_length=8 * 2**20)
+    filename: str | None = Field(default=None, max_length=200)
+
+
 class ResumeRequest(BaseModel):
     decision: Literal["approve", "reject"]
     approver: str = Field(min_length=1, description="Phase 6 takes this from the Keycloak token instead")
@@ -155,6 +160,21 @@ def submit(req: SubmitRequest):
     return {"run_id": run_id, "status": "submitted"}
 
 
+@app.post("/runs/image", status_code=202)
+def submit_image(req: ImageSubmitRequest):
+    """A scanned invoice. The backend never opens the image: the first step sends it to
+    the sandboxed OCR service, and the text then goes through the guardrail like pasted text."""
+    if len(req.image_base64) * 3 // 4 > config.MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail=f"image larger than {config.MAX_IMAGE_BYTES // 2**20} MB")
+    run_id = str(uuid.uuid4())
+    with rt.pool.connection() as conn:
+        conn.execute("INSERT INTO runs (run_id, status, source) VALUES (%s, 'submitted', 'ocr')", (run_id,))
+    initial = {"run_id": run_id, "invoice_text": "", "image_base64": req.image_base64, "source": "ocr",
+               "status": "submitted", "audit_trail": []}
+    rt.workers.submit(_drive, run_id, initial)
+    return {"run_id": run_id, "status": "submitted"}
+
+
 @app.get("/runs")
 def list_runs(status: str | None = None, limit: int = 50):
     with rt.pool.connection() as conn:
@@ -173,7 +193,7 @@ def get_run(run_id: str):
         row = conn.execute("SELECT * FROM runs WHERE run_id = %s", (run_id,)).fetchone()
     return {
         "run": row,  # service status (failed, resuming, retrying) lives here, not in the graph state
-        "state": snapshot.values,
+        "state": {k: v for k, v in snapshot.values.items() if k != "image_base64"},
         "next": list(snapshot.next),
         "awaiting_human": [i.value for i in snapshot.interrupts],
     }

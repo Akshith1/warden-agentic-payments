@@ -1,5 +1,7 @@
 {
   "agent": "extraction",
-  "purpose": "Reads the invoice text. Touches nothing else.",
-  "allowed_actions": []
+  "purpose": "Reads the invoice: scanned images through the sandboxed OCR service, then the text. Touches nothing else.",
+  "allowed_actions": [
+    "RunSandboxedOcr"
+  ]
 }
