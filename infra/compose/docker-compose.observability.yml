@@ -1,0 +1,67 @@
+# Layer: observability (phase 9b). Grafana's all-in-one OpenTelemetry image: a collector,
+# Tempo (traces), Prometheus (metrics), Loki (logs) and Grafana, in one container.
+# Grafana: http://localhost:3000, user admin, password GRAFANA_ADMIN_PASSWORD from .env.
+#
+# This file also tells each instrumented service where to send its telemetry. warden-pii and
+# warden-ocr stay out on purpose: they sit on internal networks with no route to anything but
+# the backend, and the backend's own spans already time every call it makes to them.
+networks:
+  default:
+    name: warden-net
+    external: true
+
+volumes:
+  lgtm-data:
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=warden
+  OTEL_METRIC_EXPORT_INTERVAL: "15000"
+  # Service logs stay in the container log; the backend sends its step log itself.
+  OTEL_LOGS_EXPORTER: none
+  OTEL_PYTHON_FASTAPI_EXCLUDED_URLS: health
+
+services:
+  lgtm:
+    image: grafana/otel-lgtm:0.38.1@sha256:0df9bc14142000b161344bd24caf6ddd319b7319055aedaf9b0692b125730af7
+    restart: unless-stopped
+    environment:
+      # The image lets anyone in as an admin by default; Warden's Grafana asks for a password.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?run infra/scripts/fill-secrets.py (phase 9b)}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/warden/warden.json
+    volumes:
+      - lgtm-data:/data
+      - ./infra/grafana/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/warden:ro
+      - ./infra/grafana/warden-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/warden.yaml:ro
+    ports:
+      - "127.0.0.1:3000:3000"   # Grafana only; the collector's ports stay on the Docker network
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  warden-backend:
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: warden-backend
+  warden-ledger:
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: warden-ledger
+  warden-policy:
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: warden-policy
+  warden-control:
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: warden-control
+  warden-quality:
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: warden-quality

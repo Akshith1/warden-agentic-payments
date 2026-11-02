@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
-from . import config
+from . import config, telemetry
 from .agents import Deps
 from .agents.policy_check import payment_facts
 from .auth import User, require
@@ -72,6 +72,8 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="warden-backend", lifespan=lifespan)
+if telemetry.configure():   # phase 9b: only when OTEL_EXPORTER_OTLP_ENDPOINT is set
+    telemetry.instrument(app)
 
 
 class SubmitRequest(BaseModel):
@@ -138,12 +140,21 @@ def _record_steps(run_id: str, values: dict) -> None:
             conn.execute("UPDATE runs SET audited = %s WHERE run_id = %s", (i + 1, run_id))
 
 
-def _drive(run_id: str, graph_input) -> None:
+def _drive(run_id: str, graph_input, links=None) -> None:
+    kind = "resume" if isinstance(graph_input, Command) else "retry" if graph_input is None else "submit"
+    with telemetry.run_span(run_id, kind, links) as span:
+        _drive_traced(run_id, graph_input, span)
+
+
+def _drive_traced(run_id: str, graph_input, span) -> None:
+    values: dict = {}
     try:
         for values in rt.graph.stream(graph_input, _config(run_id), stream_mode="values"):
             _sync(run_id, values)
             _record_steps(run_id, values)
+        telemetry.run_ended(span, values)
     except KillSwitchOn as exc:
+        telemetry.run_failed(span, "stopped_by_kill_switch", exc)
         # Not an error in the run: someone (or the watchdog) stopped payments. Retry after the reset.
         with rt.pool.connection() as conn:
             conn.execute("UPDATE runs SET status = 'failed', status_reason = %s, updated_at = now() "
@@ -157,6 +168,7 @@ def _drive(run_id: str, graph_input) -> None:
         # nothing decided against this invoice; a provider or infrastructure error stopped it,
         # and the checkpoint lets POST /runs/{id}/retry continue from the step that failed.
         log.exception("run %s failed", run_id)
+        telemetry.run_failed(span, "failed", exc)
         with rt.pool.connection() as conn:
             conn.execute("UPDATE runs SET status = 'failed', status_reason = %s, updated_at = now() "
                          "WHERE run_id = %s", (f"error: {type(exc).__name__}: {exc}"[:1000], run_id))
@@ -213,7 +225,8 @@ def _start(initial: dict, user: User) -> dict:
     except Exception:
         log.warning("could not record the submission of run %s", run_id)
     rt.workers.submit(_drive, run_id, initial | {"run_id": run_id, "submitted_by": user.username,
-                                                 "status": "submitted", "audit_trail": []})
+                                                 "status": "submitted", "audit_trail": []},
+                      telemetry.current_link())
     return {"run_id": run_id, "status": "submitted"}
 
 
@@ -281,7 +294,7 @@ def resume(run_id: str, req: ResumeRequest, user: User = Depends(DECIDER)):
     if not claimed:
         raise HTTPException(status_code=409, detail="run is already being resumed")
     answer = req.model_dump() | {"approver": user.username, "approver_name": user.name, "roles": sorted(user.roles)}
-    rt.workers.submit(_drive, run_id, Command(resume=answer))
+    rt.workers.submit(_drive, run_id, Command(resume=answer), telemetry.current_link())
     return {"run_id": run_id, "status": "resuming"}
 
 
@@ -309,7 +322,7 @@ def retry(run_id: str):
                                "WHERE run_id = %s AND status = 'failed' RETURNING run_id", (run_id,)).fetchone()
     if not claimed:
         raise HTTPException(status_code=409, detail="only a failed run can be retried")
-    rt.workers.submit(_drive, run_id, None)
+    rt.workers.submit(_drive, run_id, None, telemetry.current_link())
     return {"run_id": run_id, "status": "retrying"}
 
 

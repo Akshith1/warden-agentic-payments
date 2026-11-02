@@ -6,6 +6,7 @@ from langgraph.types import interrupt
 from .agents import (Deps, approval, audit, critic, extraction, guardrail, ocr, payment_execution, policy_check,
                      privacy, risk_scoring)
 from .schemas import RunState
+from .telemetry import traced_step
 
 
 def human_review(state: RunState, deps: Deps) -> dict:
@@ -87,18 +88,18 @@ def after_dry_run(state: RunState) -> str:
 
 def build_graph(deps: Deps, checkpointer=None):
     g = StateGraph(RunState)
-    g.add_node("ocr", partial(ocr.run, deps=deps))
-    g.add_node("privacy", partial(privacy.run, deps=deps))
-    g.add_node("guardrail", partial(guardrail.run, deps=deps))
-    g.add_node("extraction", partial(extraction.run, deps=deps))
-    g.add_node("risk_scoring", partial(risk_scoring.run, deps=deps))
-    g.add_node("approval", partial(approval.run, deps=deps))
-    g.add_node("critic", partial(critic.run, deps=deps))
-    g.add_node("pending_human", mark_pending)
-    g.add_node("human_review", partial(human_review, deps=deps))
-    g.add_node("policy_check", partial(policy_check.run, deps=deps))
-    g.add_node("payment_execution", partial(payment_execution.dry_run, deps=deps))
-    g.add_node("settle", partial(payment_execution.settle, deps=deps))
+    g.add_node("ocr", traced_step("ocr", partial(ocr.run, deps=deps)))
+    g.add_node("privacy", traced_step("privacy", partial(privacy.run, deps=deps)))
+    g.add_node("guardrail", traced_step("guardrail", partial(guardrail.run, deps=deps)))
+    g.add_node("extraction", traced_step("extraction", partial(extraction.run, deps=deps)))
+    g.add_node("risk_scoring", traced_step("risk_scoring", partial(risk_scoring.run, deps=deps)))
+    g.add_node("approval", traced_step("approval", partial(approval.run, deps=deps)))
+    g.add_node("critic", traced_step("critic", partial(critic.run, deps=deps)))
+    g.add_node("pending_human", traced_step("pending_human", mark_pending))
+    g.add_node("human_review", traced_step("human_review", partial(human_review, deps=deps)))
+    g.add_node("policy_check", traced_step("policy_check", partial(policy_check.run, deps=deps)))
+    g.add_node("payment_execution", traced_step("payment_execution", partial(payment_execution.dry_run, deps=deps)))
+    g.add_node("settle", traced_step("settle", partial(payment_execution.settle, deps=deps)))
 
     g.set_conditional_entry_point(start, {"ocr": "ocr", "privacy": "privacy"})
     g.add_conditional_edges("ocr", after_ocr, {"privacy": "privacy", "end": END})
