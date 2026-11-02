@@ -48,3 +48,8 @@ SQL
 }
 
 reader warden_quality "${PGPASS_WARDEN_QUALITY:?add PGPASS_WARDEN_QUALITY to .env (phase 7b)}"
+
+# Phase 7b, optional: the data catalogue's own database (OpenMetadata keeps its metadata here).
+if [ -n "${PGPASS_OPENMETADATA:-}" ]; then
+  create openmetadata "$PGPASS_OPENMETADATA"
+fi

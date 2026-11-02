@@ -19,6 +19,8 @@ services:
       PGPASS_LITELLM: ${PGPASS_LITELLM:?set in .env}
       PGPASS_MLFLOW: ${PGPASS_MLFLOW:?add PGPASS_MLFLOW to .env}
       PGPASS_WARDEN_QUALITY: ${PGPASS_WARDEN_QUALITY:?add PGPASS_WARDEN_QUALITY to .env (phase 7b)}
+      # Optional: only the data catalogue (phase 7b, the catalogue profile) uses it.
+      PGPASS_OPENMETADATA: ${PGPASS_OPENMETADATA:-}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres-init:/docker-entrypoint-initdb.d:ro
