@@ -95,7 +95,7 @@ def test_first_seen_vendor_waits_for_human_then_settles(checkpointer, ledger, le
     assert "first-seen vendor" in snap.values["escalation_reasons"]
     assert cash(ledger_url) == 10000
 
-    graph.invoke(Command(resume={"decision": "approve", "approver": "controller-1"}), cfg)
+    graph.invoke(Command(resume={"decision": "approve", "approver": "controller-1", "roles": ["approver"]}), cfg)
     assert state(graph, cfg)["status"] == "settled"
     assert cash(ledger_url) == 10000 - 90
 
@@ -157,7 +157,7 @@ def test_duplicate_invoice_blocked_by_ledger(checkpointer, ledger, ledger_url):
 
 def test_insufficient_funds_blocked_by_dry_run(checkpointer, ledger, ledger_url):
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(vendor="Big Order Co", total=12000.0)))
-    graph.invoke(Command(resume={"decision": "approve", "approver": "cfo"}), cfg)
+    graph.invoke(Command(resume={"decision": "approve", "approver": "cfo", "roles": ["approver", "controller"]}), cfg)
     s = state(graph, cfg)
     assert s["status"] == "blocked" and "insufficient funds" in s["status_reason"]
     assert cash(ledger_url) == 10000
@@ -267,7 +267,8 @@ def test_person_links_a_first_seen_name_to_an_existing_vendor(checkpointer, ledg
 
     ok, _ = ledger.confirm_alias("Cashier Lee ACME SUPPLY", acme, "controller-1", cfg["configurable"]["thread_id"])
     assert ok  # the API does this before resuming; see test_api
-    graph.invoke(Command(resume={"decision": "approve", "approver": "controller-1", "same_vendor_id": acme}), cfg)
+    graph.invoke(Command(resume={"decision": "approve", "approver": "controller-1", "roles": ["approver"],
+                                 "same_vendor_id": acme}), cfg)
 
     s = state(graph, cfg)
     assert s["status"] == "settled" and cash(ledger_url) == 10000 - 80
@@ -307,7 +308,7 @@ def test_fourth_payment_in_a_day_goes_to_a_person(checkpointer, ledger, ledger_u
     assert s["status"] == "pending_human"
     assert s["escalation_reasons"] == ["policy: the vendor already had 3 payments approved in the last 24 hours, "
                                        "so a person must approve"]
-    graph.invoke(Command(resume={"decision": "approve", "approver": "controller-1"}), cfg)
+    graph.invoke(Command(resume={"decision": "approve", "approver": "controller-1", "roles": ["approver"]}), cfg)
     s = state(graph, cfg)
     assert s["status"] == "settled" and cash(ledger_url) == 10000 - 200
     checks = [e for e in s["audit_trail"] if e["step"] == "policy"]
@@ -339,7 +340,7 @@ def test_policy_refusing_a_person_stops_the_run(checkpointer, ledger, ledger_url
     cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
     graph.invoke({"run_id": cfg["configurable"]["thread_id"], "invoice_text": "x", "source": "paste",
                   "audit_trail": []}, cfg)
-    graph.invoke(Command(resume={"decision": "approve", "approver": "clerk"}), cfg)
+    graph.invoke(Command(resume={"decision": "approve", "approver": "clerk", "roles": ["approver"]}), cfg)
     s = state(graph, cfg)
     assert s["status"] == "blocked" and s["status_reason"] == "policy refused: needs a controller"
     assert cash(ledger_url) == 10000
@@ -462,3 +463,28 @@ def test_an_unreadable_image_is_blocked_with_the_reason(checkpointer, ledger):
     assert s["status"] == "blocked" and s["status_reason"] == ("the image could not be read: "
                                                                "only PNG, JPEG and TIFF images are accepted")
     assert fake.calls == []
+
+
+# ---- Phase 6: people approve by role, and never their own invoice ----------------------------------
+
+def test_a_person_without_the_approver_role_is_refused(checkpointer, ledger, ledger_url):
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(vendor="Brand New LLC", total=90.0)))
+    graph.invoke(Command(resume={"decision": "approve", "approver": "clerk", "roles": ["submitter"]}), cfg)
+    s = state(graph, cfg)
+    assert s["status"] == "blocked" and "no policy permits clerk to ApprovePayment" in s["status_reason"]
+    assert cash(ledger_url) == 10000
+
+
+def test_four_eyes_inside_the_graph(checkpointer, ledger, ledger_url):
+    # The API refuses this before resuming (test_api); the graph's own check refuses it too.
+    graph = build_graph(Deps(llm=FakeLLM(invoice(vendor="Brand New LLC", total=90.0)), ledger=ledger,
+                             sleep=lambda s: None), checkpointer)
+    cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    graph.invoke({"run_id": "x", "invoice_text": "x", "source": "paste", "submitted_by": "amira",
+                  "audit_trail": []}, cfg)
+    graph.invoke(Command(resume={"decision": "approve", "approver": "amira", "roles": ["approver", "controller"]}),
+                 cfg)
+    s = state(graph, cfg)
+    assert s["status"] == "blocked"
+    assert s["status_reason"] == "policy refused: you submitted this invoice, so another person must approve it"
+    assert cash(ledger_url) == 10000

@@ -2,38 +2,142 @@
   "Warden": {
     "entityTypes": {
       "Agent": {
-        "shape": { "type": "Record", "attributes": { "trustTier": { "type": "String" } } }
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "trustTier": {
+              "type": "String"
+            }
+          }
+        }
       },
       "User": {
-        "shape": { "type": "Record", "attributes": {} }
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "username": {
+              "type": "String"
+            },
+            "roles": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              }
+            }
+          }
+        }
       },
       "Payment": {
         "shape": {
           "type": "Record",
           "attributes": {
-            "amountCents": { "type": "Long" },
-            "currency": { "type": "String" },
-            "vendor": { "type": "String" },
-            "vendorKnown": { "type": "Boolean" },
-            "priorPayments": { "type": "Long" },
-            "paymentsLast24h": { "type": "Long" },
-            "confidencePct": { "type": "Long" },
-            "criticAgrees": { "type": "Boolean" },
-            "remitChanged": { "type": "Boolean" }
+            "amountCents": {
+              "type": "Long"
+            },
+            "currency": {
+              "type": "String"
+            },
+            "vendor": {
+              "type": "String"
+            },
+            "vendorKnown": {
+              "type": "Boolean"
+            },
+            "priorPayments": {
+              "type": "Long"
+            },
+            "paymentsLast24h": {
+              "type": "Long"
+            },
+            "confidencePct": {
+              "type": "Long"
+            },
+            "criticAgrees": {
+              "type": "Boolean"
+            },
+            "remitChanged": {
+              "type": "Boolean"
+            },
+            "submittedBy": {
+              "type": "String"
+            }
           }
         }
       },
       "Vendor": {
-        "shape": { "type": "Record", "attributes": { "name": { "type": "String" } } }
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": {
+              "type": "String"
+            }
+          }
+        }
       }
     },
     "actions": {
-      "ApprovePayment": { "appliesTo": { "principalTypes": ["Agent", "User"], "resourceTypes": ["Payment"] } },
-      "DryRunLedgerEntry": { "appliesTo": { "principalTypes": ["Agent"], "resourceTypes": ["Payment"] } },
-      "CreateLedgerEntry": { "appliesTo": { "principalTypes": ["Agent"], "resourceTypes": ["Payment"] } },
-      "RecordVendorPayment": { "appliesTo": { "principalTypes": ["Agent"], "resourceTypes": ["Payment"] } },
-      "LookupVendor": { "appliesTo": { "principalTypes": ["Agent", "User"], "resourceTypes": ["Vendor"] } },
-      "ConfirmVendorAlias": { "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Vendor"] } }
+      "ApprovePayment": {
+        "appliesTo": {
+          "principalTypes": [
+            "Agent",
+            "User"
+          ],
+          "resourceTypes": [
+            "Payment"
+          ]
+        }
+      },
+      "DryRunLedgerEntry": {
+        "appliesTo": {
+          "principalTypes": [
+            "Agent"
+          ],
+          "resourceTypes": [
+            "Payment"
+          ]
+        }
+      },
+      "CreateLedgerEntry": {
+        "appliesTo": {
+          "principalTypes": [
+            "Agent"
+          ],
+          "resourceTypes": [
+            "Payment"
+          ]
+        }
+      },
+      "RecordVendorPayment": {
+        "appliesTo": {
+          "principalTypes": [
+            "Agent"
+          ],
+          "resourceTypes": [
+            "Payment"
+          ]
+        }
+      },
+      "LookupVendor": {
+        "appliesTo": {
+          "principalTypes": [
+            "Agent",
+            "User"
+          ],
+          "resourceTypes": [
+            "Vendor"
+          ]
+        }
+      },
+      "ConfirmVendorAlias": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Vendor"
+          ]
+        }
+      }
     }
   }
 }

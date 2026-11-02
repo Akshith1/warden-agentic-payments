@@ -16,6 +16,13 @@ VENDOR_LOOKUP_KEY = os.environ.get("VENDOR_LOOKUP_KEY", "")
 OCR_URL = os.environ.get("OCR_URL", "http://warden-ocr:8000")
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(5 * 2**20)))
 
+# Phase 6: Keycloak. Keys are fetched over the Docker network; the issuer is the URL
+# browsers use, because that is what Keycloak writes into every token.
+KEYCLOAK_ISSUER = os.environ.get("KEYCLOAK_ISSUER", "http://localhost:8180/realms/warden")
+KEYCLOAK_JWKS_URL = os.environ.get("KEYCLOAK_JWKS_URL",
+                                   "http://keycloak:8080/realms/warden/protocol/openid-connect/certs")
+TOKEN_AUDIENCE = os.environ.get("TOKEN_AUDIENCE", "warden-backend")
+
 # Phase 4: Cedar policy decision point. Every approval and ledger write is checked there too.
 POLICY_URL = os.environ.get("POLICY_URL", "http://warden-policy:8000")
 

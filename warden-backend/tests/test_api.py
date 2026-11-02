@@ -4,9 +4,10 @@ the same test double."""
 import time
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
-from app import main
+from app import auth, main
 from app.graph import build_graph
 
 from .test_graph import FakeLLM, invoice
@@ -19,6 +20,25 @@ def api(ledger, monkeypatch):
     monkeypatch.setattr(main, "build_graph", using(fake, ledger))
     with TestClient(main.app) as client:
         yield client
+
+
+PEOPLE = {
+    "clerk": auth.User("clerk", "Accounts Clerk", frozenset({"submitter"})),
+    "amira": auth.User("amira", "Amira Approver", frozenset({"submitter", "approver"})),
+    "rajesh": auth.User("rajesh", "Rajesh Vasa", frozenset({"submitter", "approver", "controller"})),
+}
+
+
+@pytest.fixture(autouse=True)
+def signed_in():
+    """Stands in for Keycloak (tested on its own in test_auth.py). The clerk submits and
+    Amira decides, unless a request names someone else in X-Test-User."""
+    def who(request: Request) -> auth.User:
+        default = "amira" if request.url.path.endswith("/resume") else "clerk"
+        return PEOPLE[request.headers.get("X-Test-User", default)]
+    main.app.dependency_overrides[auth.current_user] = who
+    yield
+    main.app.dependency_overrides.pop(auth.current_user, None)
 
 
 def using(fake, ledger):
@@ -51,8 +71,8 @@ def test_submit_queue_resume(api):
     assert detail["next"] == ["human_review"] and detail["run"]["status"] == "pending_human"
     assert "first-seen vendor" in detail["awaiting_human"][0]["escalation_reasons"]
 
-    assert api.post(f"/runs/{run_id}/resume", json={"decision": "approve", "approver": "c1"}).status_code == 202
-    second = api.post(f"/runs/{run_id}/resume", json={"decision": "approve", "approver": "c1"})
+    assert api.post(f"/runs/{run_id}/resume", json={"decision": "approve"}).status_code == 202
+    second = api.post(f"/runs/{run_id}/resume", json={"decision": "approve"})
     assert second.status_code == 409
     wait_for(api, run_id, "settled")
 
@@ -114,7 +134,7 @@ def test_approver_links_first_seen_vendor_to_an_existing_one(api, ledger):
     run_id = api.post("/runs", json={"invoice_text": "Brand New LLC ..."}).json()["run_id"]
     wait_for(api, run_id, "pending_human")
 
-    body = {"decision": "approve", "approver": "c1"}
+    body = {"decision": "approve"}
     assert api.post(f"/runs/{run_id}/resume", json=body | {"decision": "reject", "same_vendor_id": vid}).status_code == 422
     bad = api.post(f"/runs/{run_id}/resume", json=body | {"same_vendor_id": 999})
     assert bad.status_code == 409 and "no such vendor" in bad.json()["detail"]
@@ -137,7 +157,7 @@ def test_a_known_vendor_cannot_be_relinked(ledger, monkeypatch):
         run_id = api.post("/runs", json={"invoice_text": "Acme ..."}).json()["run_id"]
         wait_for(api, run_id, "pending_human")
         other = ledger.lookup_vendor("Other Vendor")["vendor_id"]
-        r = api.post(f"/runs/{run_id}/resume", json={"decision": "approve", "approver": "c1", "same_vendor_id": other})
+        r = api.post(f"/runs/{run_id}/resume", json={"decision": "approve", "same_vendor_id": other})
         assert r.status_code == 409 and "only a first-seen vendor" in r.json()["detail"]
 
 
@@ -167,3 +187,25 @@ def test_image_submission_is_read_by_ocr_and_never_returned(ledger, monkeypatch)
         assert "image_base64" not in detail["state"] and detail["state"]["invoice_text"].startswith("BRAND NEW")
         monkeypatch.setattr(main.config, "MAX_IMAGE_BYTES", 4)
         assert api.post("/runs/image", json={"image_base64": "A" * 100}).status_code == 413
+
+
+def test_people_decide_by_role_and_never_their_own_invoice(api):
+    run_id = api.post("/runs", json={"invoice_text": "Brand New LLC ..."},
+                      headers={"X-Test-User": "amira"}).json()["run_id"]
+    wait_for(api, run_id, "pending_human")
+    clerk = api.post(f"/runs/{run_id}/resume", json={"decision": "approve"}, headers={"X-Test-User": "clerk"})
+    assert clerk.status_code == 403 and clerk.json()["detail"] == "needs the approver or controller role"
+    own = api.post(f"/runs/{run_id}/resume", json={"decision": "approve"})  # amira submitted it
+    assert own.status_code == 403
+    assert own.json()["detail"] == ("you can't approve this one: "
+                                    "you submitted this invoice, so another person must approve it")
+    assert wait_for(api, run_id, "pending_human")  # still waiting for someone who may
+    ok = api.post(f"/runs/{run_id}/resume", json={"decision": "approve"}, headers={"X-Test-User": "rajesh"})
+    assert ok.status_code == 202
+    row = wait_for(api, run_id, "settled")
+    assert row["submitted_by"] == "amira"
+    trail = api.get(f"/runs/{run_id}").json()["state"]["audit_trail"]
+    review = next(e for e in trail if e["step"] == "human_review")
+    assert review["approver"] == "rajesh" and review["approver_name"] == "Rajesh Vasa"
+    me = api.get("/me", headers={"X-Test-User": "clerk"}).json()
+    assert me == {"username": "clerk", "name": "Accounts Clerk", "roles": ["submitter"]}

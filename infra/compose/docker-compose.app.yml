@@ -80,6 +80,8 @@ services:
         condition: service_healthy
       warden-ocr:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
       # Start after MLflow so the promoted prompt is found; not required, because the
       # backend falls back to its bundled prompt when MLflow is absent.
       mlflow:
@@ -93,6 +95,8 @@ services:
       LEDGER_URL: http://warden-ledger:8000
       POLICY_URL: http://warden-policy:8000
       OCR_URL: http://warden-ocr:8000
+      KEYCLOAK_ISSUER: http://localhost:8180/realms/warden
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/warden/protocol/openid-connect/certs
       LEDGER_WRITE_KEY: ${LEDGER_WRITE_KEY:?set in .env}
       VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
       ROUTINE_AMOUNT_THRESHOLD: ${ROUTINE_AMOUNT_THRESHOLD:-5000}
@@ -117,6 +121,11 @@ services:
     environment:
       BACKEND_URL: http://warden-backend:8000
       LEDGER_URL: http://warden-ledger:8000
+      # Browsers are sent to Keycloak at localhost:8180; this server exchanges codes and
+      # fetches keys at keycloak:8080. Both must match infra/keycloak/realm-warden.json.
+      KEYCLOAK_PUBLIC_URL: http://localhost:8180
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      CONSOLE_URL: http://localhost:3100
       # Read-only ledger key, used by the console's server only; the browser never sees it.
       VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
     ports:

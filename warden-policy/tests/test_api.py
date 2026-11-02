@@ -22,8 +22,8 @@ def api(monkeypatch):
         yield client
 
 
-def approve(client, who=("Agent", "approval"), **payment):
-    body = {"principal": {"type": who[0], "id": who[1]}, "action": "ApprovePayment",
+def approve(client, who=("Agent", "approval"), roles=(), **payment):
+    body = {"principal": {"type": who[0], "id": who[1], "roles": list(roles)}, "action": "ApprovePayment",
             "payment": {"amount": "120.00", "currency": "MYR", "vendor": "Acme Supply", "confidence": 0.95,
                         "critic_agrees": True} | payment}
     return client.post("/authorize", json=body).json()
@@ -36,7 +36,7 @@ def test_a_burst_is_limited_before_anything_settles(api):
     fourth = approve(api)
     assert fourth["decision"] == "Deny" and fourth["policies"] == ["agents-vendor-rate-limit"]
     assert fourth["facts"]["paymentsLast24h"] == 3
-    assert approve(api, who=("User", "Rajesh"))["decision"] == "Allow"
+    assert approve(api, who=("User", "rajesh"), roles=["approver"])["decision"] == "Allow"
     api.history["vendor_id"] = 8  # another vendor has its own count
     assert approve(api)["decision"] == "Allow"
 
@@ -60,7 +60,7 @@ def test_fourth_payment_in_a_day_needs_a_person(api):
     api.history["payments_last_24h"] = 3
     agent = approve(api)
     assert agent["decision"] == "Deny" and agent["policies"] == ["agents-vendor-rate-limit"]
-    assert approve(api, who=("User", "Rajesh"))["decision"] == "Allow"
+    assert approve(api, who=("User", "rajesh"), roles=["approver"])["decision"] == "Allow"
 
 
 def test_only_payment_execution_may_write_the_ledger(api):
@@ -86,7 +86,7 @@ def test_vendor_actions_and_policy_listing(api):
                                      "vendor": "Acme"}).json()
     assert r["decision"] == "Deny" and r["reasons"] == ["no policy permits extraction to LookupVendor"]
     listing = api.get("/policies").json()
-    assert len(listing["rules"]) == 14 and listing["digest"] == api.get("/health").json()["policy_set"]
+    assert len(listing["rules"]) == 16 and listing["digest"] == api.get("/health").json()["policy_set"]
     assert api.post("/authorize", json={"principal": {"type": "User", "id": "x"},
                                         "action": "ApprovePayment"}).status_code == 422
 
@@ -100,3 +100,15 @@ def test_no_ledger_no_decision(api, monkeypatch):
     r = api.post("/authorize", json={"principal": {"type": "Agent", "id": "approval"}, "action": "ApprovePayment",
                                      "payment": {"amount": "10", "currency": "MYR", "vendor": "Acme"}})
     assert r.status_code == 503
+
+
+def test_people_approve_by_role_and_never_their_own_invoice(api):
+    person = ("User", "amira")
+    assert approve(api, who=person, roles=["approver"], amount="49999.99")["decision"] == "Allow"
+    over = approve(api, who=person, roles=["approver"], amount="50000.01")
+    assert over["decision"] == "Deny" and over["reasons"] == ["no policy permits amira to ApprovePayment"]
+    assert approve(api, who=person, roles=["approver", "controller"], amount="50000.01")["decision"] == "Allow"
+    assert approve(api, who=person, roles=["submitter"])["decision"] == "Deny"
+    own = approve(api, who=person, roles=["approver", "controller"], submitted_by="amira")
+    assert own["decision"] == "Deny" and own["policies"] == ["four-eyes"]
+    assert own["reasons"] == ["you submitted this invoice, so another person must approve it"]
