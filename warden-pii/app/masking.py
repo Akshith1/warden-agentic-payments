@@ -14,6 +14,8 @@ mapping goes back to the caller, so it can put the real values back after
 the model has answered. This service keeps nothing."""
 import re
 
+import tldextract
+import tldextract.tldextract as _tld
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 
@@ -31,6 +33,13 @@ _LABELLED_NAME = Pattern("labelled name",
 _ACCOUNT = Pattern("bank account", r"(?i)(?<=\b(?:account|acct|a/c)(?:\s*(?:no|number))?\.?\s*[:#]?\s*)"
                                    r"\d[\d\- ]{6,22}\d", 0.9)
 _NRIC = Pattern("Malaysian IC", r"\b\d{6}-\d{2}-\d{4}\b", 0.85)
+
+
+# Presidio's email check asks tldextract whether a domain is real. By default tldextract
+# keeps a cache on disk (and takes a lock file even to read it) and may fetch the list of
+# domains from the internet. This service has a read-only filesystem and no internet route,
+# so use the copy of the list that ships inside tldextract: no cache, no lock, no network.
+_tld.TLD_EXTRACTOR = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=())
 
 
 def build_analyzer() -> AnalyzerEngine:

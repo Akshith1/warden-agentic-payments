@@ -61,3 +61,22 @@ def test_putting_the_values_back_restores_the_text(api):
 def test_nothing_personal_nothing_masked(api):
     text = "BRIGHTLINE OFFICE SUPPLIES SDN BHD\nInvoice BOS-10811\nStapler x 2 RM 38.00\nTotal: RM 92.00"
     assert masked(api, text) == {"masked": text, "mapping": {}, "counts": {}}
+
+
+def test_emails_are_masked_with_no_writable_disk_and_no_internet(api, monkeypatch):
+    # The container's filesystem is read-only and it has no route out. tldextract (used by
+    # Presidio's email check) once tried to take a lock file on every call; that failed live.
+    import socket
+
+    import filelock
+
+    def refuse(*a, **k):
+        raise PermissionError("read-only filesystem")
+
+    def no_network(*a, **k):
+        raise OSError("no route to the internet")
+
+    monkeypatch.setattr(filelock.FileLock, "acquire", refuse)
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    out = masked(api, "Send the remittance advice to accounts@kestrel-freight.com.my today.")
+    assert "kestrel-freight" not in out["masked"] and out["counts"] == {"EMAIL_ADDRESS": 1}
