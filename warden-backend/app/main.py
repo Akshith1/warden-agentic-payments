@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.types import Command
 from psycopg.rows import dict_row
@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 
 from . import config
 from .agents import Deps
+from .agents.policy_check import payment_facts
+from .auth import User, require
 from .graph import build_graph
 from .prompt_registry import load_extraction_prompt
 
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS runs (
     vendor_name    TEXT,
     total_amount   NUMERIC(18,2),
     source         TEXT NOT NULL,
+    submitted_by   TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -54,6 +57,7 @@ async def lifespan(_app):
     checkpointer.setup()
     with rt.pool.connection() as conn:
         conn.execute(RUNS_TABLE)
+        conn.execute("ALTER TABLE runs ADD COLUMN IF NOT EXISTS submitted_by TEXT")  # phase 6
         # Phase 1 recorded provider errors as 'blocked'; relabel them so they can be retried.
         conn.execute("UPDATE runs SET status = 'failed' WHERE status = 'blocked' AND status_reason LIKE 'error:%%'")
     rt.workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="run")
@@ -79,8 +83,7 @@ class ImageSubmitRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     decision: Literal["approve", "reject"]
-    approver: str = Field(min_length=1, description="Phase 6 takes this from the Keycloak token instead")
-    note: str = ""
+    note: str = Field(default="", max_length=2000)
     same_vendor_id: int | None = Field(default=None, description=(
         "Only for a first-seen vendor, only with approve: the person confirms this invoice's vendor "
         "is this existing ledger vendor, recorded as an alias so both names share one history."))
@@ -136,7 +139,17 @@ def health():
     }
 
 
-@app.get("/policies")
+ANYONE = require("submitter", "approver", "controller")
+SUBMITTER = require("submitter")
+DECIDER = require("approver", "controller")
+
+
+@app.get("/me")
+def me(user: User = Depends(ANYONE)):
+    return {"username": user.username, "name": user.name, "roles": sorted(user.roles)}
+
+
+@app.get("/policies", dependencies=[Depends(ANYONE)])
 def policies():
     """The Cedar rules in force, relayed from the policy service, with each role's
     capability manifest: both locks, for the console's governance page."""
@@ -149,33 +162,31 @@ def policies():
     return {"cedar": cedar, "capabilities": manifests}
 
 
-@app.post("/runs", status_code=202)
-def submit(req: SubmitRequest):
+def _start(initial: dict, user: User) -> dict:
     run_id = str(uuid.uuid4())
     with rt.pool.connection() as conn:
-        conn.execute("INSERT INTO runs (run_id, status, source) VALUES (%s, 'submitted', %s)", (run_id, req.source))
-    initial = {"run_id": run_id, "invoice_text": req.invoice_text, "source": req.source,
-               "status": "submitted", "audit_trail": []}
-    rt.workers.submit(_drive, run_id, initial)
+        conn.execute("INSERT INTO runs (run_id, status, source, submitted_by) VALUES (%s, 'submitted', %s, %s)",
+                     (run_id, initial["source"], user.username))
+    rt.workers.submit(_drive, run_id, initial | {"run_id": run_id, "submitted_by": user.username,
+                                                 "status": "submitted", "audit_trail": []})
     return {"run_id": run_id, "status": "submitted"}
 
 
+@app.post("/runs", status_code=202)
+def submit(req: SubmitRequest, user: User = Depends(SUBMITTER)):
+    return _start({"invoice_text": req.invoice_text, "source": req.source}, user)
+
+
 @app.post("/runs/image", status_code=202)
-def submit_image(req: ImageSubmitRequest):
+def submit_image(req: ImageSubmitRequest, user: User = Depends(SUBMITTER)):
     """A scanned invoice. The backend never opens the image: the first step sends it to
     the sandboxed OCR service, and the text then goes through the guardrail like pasted text."""
     if len(req.image_base64) * 3 // 4 > config.MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail=f"image larger than {config.MAX_IMAGE_BYTES // 2**20} MB")
-    run_id = str(uuid.uuid4())
-    with rt.pool.connection() as conn:
-        conn.execute("INSERT INTO runs (run_id, status, source) VALUES (%s, 'submitted', 'ocr')", (run_id,))
-    initial = {"run_id": run_id, "invoice_text": "", "image_base64": req.image_base64, "source": "ocr",
-               "status": "submitted", "audit_trail": []}
-    rt.workers.submit(_drive, run_id, initial)
-    return {"run_id": run_id, "status": "submitted"}
+    return _start({"invoice_text": "", "image_base64": req.image_base64, "source": "ocr"}, user)
 
 
-@app.get("/runs")
+@app.get("/runs", dependencies=[Depends(ANYONE)])
 def list_runs(status: str | None = None, limit: int = 50):
     with rt.pool.connection() as conn:
         return conn.execute(
@@ -184,7 +195,7 @@ def list_runs(status: str | None = None, limit: int = 50):
         ).fetchall()
 
 
-@app.get("/runs/{run_id}")
+@app.get("/runs/{run_id}", dependencies=[Depends(ANYONE)])
 def get_run(run_id: str):
     snapshot = rt.graph.get_state(_config(run_id))
     if not snapshot.values:
@@ -200,36 +211,45 @@ def get_run(run_id: str):
 
 
 @app.post("/runs/{run_id}/resume", status_code=202)
-def resume(run_id: str, req: ResumeRequest):
+def resume(run_id: str, req: ResumeRequest, user: User = Depends(DECIDER)):
     snapshot = rt.graph.get_state(_config(run_id))
     if not snapshot.interrupts:
         raise HTTPException(status_code=409, detail="run is not waiting for a human")
+    if req.decision == "approve":
+        # Ask Cedar before resuming, so a person who may not approve this one (amount over their
+        # tier, or their own invoice) is told now and the run stays waiting for someone who may.
+        grant = rt.deps.policy.authorize(("User", user.username), "ApprovePayment",
+                                         payment=payment_facts(snapshot.values), roles=sorted(user.roles))
+        if grant["decision"] != "Allow":
+            raise HTTPException(status_code=403, detail="you can't approve this one: " + "; ".join(grant["reasons"]))
     if req.same_vendor_id is not None:
-        _confirm_alias(run_id, snapshot.values, req)
+        _confirm_alias(run_id, snapshot.values, req, user)
     with rt.pool.connection() as conn:  # atomic claim, so two clicks can't resume the same run twice
         claimed = conn.execute("UPDATE runs SET status = 'resuming', updated_at = now() "
                                "WHERE run_id = %s AND status = 'pending_human' RETURNING run_id", (run_id,)).fetchone()
     if not claimed:
         raise HTTPException(status_code=409, detail="run is already being resumed")
-    rt.workers.submit(_drive, run_id, Command(resume=req.model_dump()))
+    answer = req.model_dump() | {"approver": user.username, "approver_name": user.name, "roles": sorted(user.roles)}
+    rt.workers.submit(_drive, run_id, Command(resume=answer))
     return {"run_id": run_id, "status": "resuming"}
 
 
-def _confirm_alias(run_id: str, values: dict, req: ResumeRequest) -> None:
+def _confirm_alias(run_id: str, values: dict, req: ResumeRequest, user: User) -> None:
     if req.decision != "approve":
         raise HTTPException(status_code=422, detail="a vendor can only be linked when approving")
     if (values.get("vendor") or {}).get("known", True):
         raise HTTPException(status_code=409, detail="only a first-seen vendor can be linked to an existing one")
     name = values["extraction"]["vendor_name"]
-    grant = rt.deps.policy.authorize(("User", req.approver.strip()), "ConfirmVendorAlias", vendor=name)
+    grant = rt.deps.policy.authorize(("User", user.username), "ConfirmVendorAlias", vendor=name,
+                                     roles=sorted(user.roles))
     if grant["decision"] != "Allow":
         raise HTTPException(status_code=403, detail="; ".join(grant["reasons"]))
-    ok, result = rt.deps.ledger_for("human-review").confirm_alias(name, req.same_vendor_id, req.approver.strip(), run_id)
+    ok, result = rt.deps.ledger_for("human-review").confirm_alias(name, req.same_vendor_id, user.username, run_id)
     if not ok:  # the run stays pending_human, so the person can choose again
         raise HTTPException(status_code=409, detail=f"could not link the vendor: {result}")
 
 
-@app.post("/runs/{run_id}/retry", status_code=202)
+@app.post("/runs/{run_id}/retry", status_code=202, dependencies=[Depends(ANYONE)])
 def retry(run_id: str):
     """Continues a failed run from the step that raised. Steps that already
     finished are not repeated: their results are in the checkpoint."""
@@ -242,7 +262,7 @@ def retry(run_id: str):
     return {"run_id": run_id, "status": "retrying"}
 
 
-@app.get("/inbox")
+@app.get("/inbox", dependencies=[Depends(ANYONE)])
 def inbox(source: Literal["sroie", "cord"] = "sroie", split: str = "test", limit: int = 20):
     """Real dataset receipts loaded by the data loader, for the console's submit page."""
     with rt.pool.connection() as conn:
@@ -259,9 +279,9 @@ def inbox(source: Literal["sroie", "cord"] = "sroie", split: str = "test", limit
 
 
 @app.post("/inbox/{external_key}/submit", status_code=202)
-def submit_from_inbox(external_key: str):
+def submit_from_inbox(external_key: str, user: User = Depends(SUBMITTER)):
     with rt.pool.connection() as conn:
         row = conn.execute("SELECT text FROM invoice_inbox WHERE external_key = %s", (external_key,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="no such document in the inbox")
-    return submit(SubmitRequest(invoice_text=row["text"], source="dataset"))
+    return _start({"invoice_text": row["text"], "source": "dataset"}, user)

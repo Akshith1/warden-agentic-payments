@@ -1,0 +1,158 @@
+{
+  "realm": "warden",
+  "enabled": true,
+  "displayName": "Warden",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 28800,
+  "ssoSessionMaxLifespan": 36000,
+  "passwordPolicy": "length(12) and notUsername",
+  "roles": {
+    "realm": [
+      {
+        "name": "submitter",
+        "description": "May submit invoices and see runs."
+      },
+      {
+        "name": "approver",
+        "description": "May approve escalated invoices up to 50,000.00 and link vendor names."
+      },
+      {
+        "name": "controller",
+        "description": "May approve escalated invoices of any amount."
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "warden-console",
+      "name": "Warden console",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3100/api/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:3100"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3100/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "warden-backend audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "warden-backend",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "warden-cli",
+      "name": "Warden scripts (PowerShell)",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "warden-backend audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "warden-backend",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "rajesh",
+      "enabled": true,
+      "firstName": "Rajesh",
+      "lastName": "Vasa",
+      "email": "rajesh@warden.local",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "change-me-rajesh",
+          "temporary": true
+        }
+      ],
+      "realmRoles": [
+        "submitter",
+        "approver",
+        "controller",
+        "default-roles-warden"
+      ],
+      "requiredActions": [
+        "UPDATE_PASSWORD"
+      ]
+    },
+    {
+      "username": "clerk",
+      "enabled": true,
+      "firstName": "Accounts",
+      "lastName": "Clerk",
+      "email": "clerk@warden.local",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "change-me-clerk",
+          "temporary": true
+        }
+      ],
+      "realmRoles": [
+        "submitter",
+        "default-roles-warden"
+      ],
+      "requiredActions": [
+        "UPDATE_PASSWORD"
+      ]
+    },
+    {
+      "username": "amira",
+      "enabled": true,
+      "firstName": "Amira",
+      "lastName": "Approver",
+      "email": "amira@warden.local",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "change-me-amira",
+          "temporary": true
+        }
+      ],
+      "realmRoles": [
+        "submitter",
+        "approver",
+        "default-roles-warden"
+      ],
+      "requiredActions": [
+        "UPDATE_PASSWORD"
+      ]
+    }
+  ]
+}

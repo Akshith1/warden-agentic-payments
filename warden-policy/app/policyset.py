@@ -59,7 +59,10 @@ def uid(entity_type: str, entity_id: str) -> str:
 
 
 def principal_entity(p: dict) -> dict:
-    attrs = {"trustTier": TRUST_TIERS.get(p["id"], "none")} if p["type"] == "Agent" else {}
+    if p["type"] == "Agent":
+        attrs = {"trustTier": TRUST_TIERS.get(p["id"], "none")}
+    else:  # roles come from the person's verified login, checked by the backend
+        attrs = {"username": p["id"], "roles": sorted(set(p.get("roles") or []))}
     return {"uid": {"type": f"Warden::{p['type']}", "id": p["id"]}, "attrs": attrs, "parents": []}
 
 
@@ -144,12 +147,16 @@ def rule_problems(p: dict) -> list[str]:
 
 def payment(**overrides) -> dict:
     attrs = {"amountCents": 12000, "currency": "MYR", "vendor": "ACME", "vendorKnown": True, "priorPayments": 3,
-             "paymentsLast24h": 0, "confidencePct": 95, "criticAgrees": True, "remitChanged": False}
+             "paymentsLast24h": 0, "confidencePct": 95, "criticAgrees": True, "remitChanged": False,
+             "submittedBy": "clerk"}
     return {"type": "Payment", "id": "p", "attrs": attrs | overrides}
 
 
 AGENT = lambda name: {"type": "Agent", "id": name}  # noqa: E731
-PERSON = {"type": "User", "id": "controller"}
+APPROVER = {"type": "User", "id": "amira", "roles": ["approver"]}
+CONTROLLER = {"type": "User", "id": "rajesh", "roles": ["submitter", "approver", "controller"]}
+CLERK = {"type": "User", "id": "clerk", "roles": ["submitter"]}
+PERSON = CONTROLLER
 VENDOR = {"type": "Vendor", "id": "v", "attrs": {"name": "ACME"}}
 
 # The answers the policy set must give. A change that alters one fails validation,
@@ -158,7 +165,15 @@ MATRIX = [
     ("agent approves a routine payment to a known vendor", AGENT("approval"), "ApprovePayment", payment(), "Allow"),
     ("agent may not approve above 5,000.00", AGENT("approval"), "ApprovePayment", payment(amountCents=500001), "Deny"),
     ("agent may approve exactly 5,000.00", AGENT("approval"), "ApprovePayment", payment(amountCents=500000), "Allow"),
-    ("a person may approve above 5,000.00", PERSON, "ApprovePayment", payment(amountCents=5000000), "Allow"),
+    ("an approver may approve above 5,000.00", APPROVER, "ApprovePayment", payment(amountCents=600000), "Allow"),
+    ("an approver may approve exactly 50,000.00", APPROVER, "ApprovePayment", payment(amountCents=5000000), "Allow"),
+    ("an approver may not approve above 50,000.00", APPROVER, "ApprovePayment", payment(amountCents=5000001), "Deny"),
+    ("a controller may approve above 50,000.00", CONTROLLER, "ApprovePayment", payment(amountCents=90000000), "Allow"),
+    ("a clerk may not approve", CLERK, "ApprovePayment", payment(submittedBy="someone-else"), "Deny"),
+    ("nobody approves their own invoice", CONTROLLER, "ApprovePayment", payment(submittedBy="rajesh"), "Deny"),
+    ("an approver may not approve their own invoice", APPROVER, "ApprovePayment", payment(submittedBy="amira"),
+     "Deny"),
+    ("a person with no roles may not approve", {"type": "User", "id": "x"}, "ApprovePayment", payment(), "Deny"),
     ("agent may not approve a first-seen vendor", AGENT("approval"), "ApprovePayment",
      payment(vendorKnown=False, priorPayments=0), "Deny"),
     ("agent may not approve with 1 prior payment", AGENT("approval"), "ApprovePayment", payment(priorPayments=1),
@@ -186,7 +201,8 @@ MATRIX = [
     ("an unknown agent may not write the ledger", AGENT("payment-executor"), "CreateLedgerEntry", payment(), "Deny"),
     ("risk scoring reads vendor history", AGENT("risk-scoring"), "LookupVendor", VENDOR, "Allow"),
     ("extraction may not read vendor history", AGENT("extraction"), "LookupVendor", VENDOR, "Deny"),
-    ("a person may link a vendor alias", PERSON, "ConfirmVendorAlias", VENDOR, "Allow"),
+    ("an approver may link a vendor alias", APPROVER, "ConfirmVendorAlias", VENDOR, "Allow"),
+    ("a clerk may not link a vendor alias", CLERK, "ConfirmVendorAlias", VENDOR, "Deny"),
 ]
 
 

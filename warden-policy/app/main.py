@@ -68,6 +68,9 @@ app = FastAPI(title="warden-policy", lifespan=lifespan)
 class Principal(BaseModel):
     type: Literal["Agent", "User"]
     id: str = Field(min_length=1, max_length=200)
+    # For a person: the roles in their verified Keycloak token, passed on by the backend.
+    # Ignored for agents, whose trust tier comes from this service's registry.
+    roles: list[str] = Field(default_factory=list, max_length=20)
 
 
 class PaymentFacts(BaseModel):
@@ -79,6 +82,7 @@ class PaymentFacts(BaseModel):
     confidence: float = Field(default=0, ge=0, le=1)
     critic_agrees: bool = False
     remit_changed: bool = False
+    submitted_by: str = ""  # username of the person who submitted the invoice, if any
 
 
 class AuthorizeRequest(BaseModel):
@@ -129,6 +133,7 @@ def authorize(req: AuthorizeRequest):
             "confidencePct": int(round(req.payment.confidence * 100)),
             "criticAgrees": req.payment.critic_agrees,
             "remitChanged": req.payment.remit_changed,
+            "submittedBy": req.payment.submitted_by,
         }
         resource = {"type": "Payment", "id": "payment", "attrs": facts}
     elif req.vendor:

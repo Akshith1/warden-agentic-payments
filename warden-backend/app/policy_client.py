@@ -10,8 +10,9 @@ class PolicyClient:
         self._http = httpx.Client(base_url=base_url or config.POLICY_URL, timeout=timeout)
 
     def authorize(self, principal: tuple[str, str], action: str, *, payment: dict | None = None,
-                  vendor: str | None = None) -> dict:
-        body = {"principal": {"type": principal[0], "id": principal[1]}, "action": action}
+                  vendor: str | None = None, roles: list[str] | None = None) -> dict:
+        body = {"principal": {"type": principal[0], "id": principal[1], "roles": list(roles or [])},
+                "action": action}
         if payment is not None:
             body["payment"] = payment
         if vendor is not None:
