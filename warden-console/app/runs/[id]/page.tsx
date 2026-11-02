@@ -52,7 +52,12 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
               <tbody>
                 {ext.line_items.map((li, i) => (
                   <tr key={i}>
-                    <td>{li.description}{li.quantity ? <span className="muted"> × {li.quantity}</span> : null}</td>
+                    <td>
+                      {li.description}
+                      {/* Skip the quantity when the printed description already says it ("A4 paper x 4"). */}
+                      {li.quantity && !new RegExp(`[x×]\\s*${li.quantity}\\s*$`, "i").test(li.description)
+                        ? <span className="muted"> × {li.quantity}</span> : null}
+                    </td>
                     <td className="num">{money(li.amount)}</td>
                   </tr>
                 ))}
