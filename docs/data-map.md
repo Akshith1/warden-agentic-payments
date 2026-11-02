@@ -50,6 +50,16 @@ OpenMetadata, started with the `catalogue` profile, holds Warden's table and col
 
 The tags are set by `warden-catalogue/catalogue/classify.py`; a test keeps that file and this table in step.
 
+## Telemetry (phase 9b)
+
+| Data | Where it lives | Notes |
+| --- | --- | --- |
+| Traces: steps, model calls and service calls with timings | Tempo, in the `lgtm` container's volume | Attributes are ids, step names, vendor names, amounts, scores and decisions. Model calls carry the route, model and token counts, never the prompt or the answer |
+| Metrics: counts and latencies | Prometheus, same volume | Labels are step, agent, route, outcome, decision and, for consistency checks, vendor |
+| Step log: each trail entry as JSON | Loki, same volume | The audit log's facts, without an approver's note. Never invoice text |
+
+Not instrumented: `warden-pii` and `warden-ocr`, which stay on their internal networks.
+
 ## Leaving the machine
 
 Only the model gateway (LiteLLM) talks to model providers (OpenAI, Groq). What it sends is the masked text and re-masked extracted fields. The OCR and PII services have no route to the internet at all.
