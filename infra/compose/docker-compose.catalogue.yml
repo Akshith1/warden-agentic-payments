@@ -1,0 +1,151 @@
+# Layer: the data catalogue (phase 7b), OpenMetadata 2.0.7. Optional: nothing here starts
+# unless asked for, because it needs about 4 GB more memory while it runs:
+#   .\infra\scripts\compose.ps1 --profile catalogue up -d
+# Then open http://localhost:8585 and sign in as admin@open-metadata.org with
+# OPENMETADATA_ADMIN_PASSWORD from .env.
+#
+# Based on OpenMetadata's own docker-compose-postgres.yml for 2.0.7, with these changes:
+# - its database lives in Warden's Postgres (role and database "openmetadata"), not a second one;
+# - no Airflow: ingestion runs as a one-shot job (catalogue-ingest) whenever you want it;
+# - its own signing keys, admin password and encryption key, instead of the ones the image
+#   ships with (the same in every install); self sign-up is off;
+# - only the web UI is published, on 127.0.0.1.
+networks:
+  default:
+    name: warden-net
+    external: true
+
+volumes:
+  catalogue-search-data:
+  catalogue-keys:
+
+x-catalogue-server-env: &server-env
+  OPENMETADATA_CLUSTER_NAME: warden
+  SERVER_PORT: "8585"
+  SERVER_ADMIN_PORT: "8586"
+  LOG_LEVEL: INFO
+  OPENMETADATA_HEAP_OPTS: -Xmx1G -Xms1G
+  # People sign in with a password; the first admin's is set from .env when the catalogue's
+  # database is first created. Nobody else can sign up.
+  AUTHENTICATION_PROVIDER: basic
+  AUTHENTICATION_ENABLE_SELF_SIGNUP: "false"
+  AUTHORIZER_ADMIN_PRINCIPALS: "[admin:${OPENMETADATA_ADMIN_PASSWORD:?run infra/scripts/fill-secrets.py (phase 7b)}]"
+  AUTHORIZER_PRINCIPAL_DOMAIN: open-metadata.org
+  RSA_PUBLIC_KEY_FILE_PATH: /opt/openmetadata/keys/public_key.der
+  RSA_PRIVATE_KEY_FILE_PATH: /opt/openmetadata/keys/private_key.der
+  JWT_KEY_ID: warden-catalogue-1
+  # Encrypts connection passwords the catalogue stores (here, the read-only role's).
+  FERNET_KEY: ${OPENMETADATA_FERNET_KEY:?run infra/scripts/fill-secrets.py (phase 7b)}
+  # No Airflow: ingestion is the catalogue-ingest job.
+  PIPELINE_SERVICE_CLIENT_ENABLED: "false"
+  SERVER_HOST_API_URL: http://catalogue:8585/api
+  DB_DRIVER_CLASS: org.postgresql.Driver
+  DB_SCHEME: postgresql
+  DB_PARAMS: allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
+  DB_USER: openmetadata
+  DB_USER_PASSWORD: ${PGPASS_OPENMETADATA:?run infra/scripts/fill-secrets.py (phase 7b)}
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  OM_DATABASE: openmetadata
+  SEARCH_TYPE: elasticsearch
+  ELASTICSEARCH_HOST: catalogue-search
+  ELASTICSEARCH_PORT: "9200"
+  ELASTICSEARCH_SCHEME: http
+
+services:
+  catalogue-search:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.3.0
+    profiles: ["catalogue"]
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms1024m -Xmx1024m
+      - xpack.security.enabled=false
+    volumes:
+      - catalogue-search-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: "curl -s http://localhost:9200/_cluster/health?pretty | grep status | grep -qE 'green|yellow' || exit 1"
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # Writes the catalogue's own RSA key pair once; later runs keep it.
+  catalogue-keys-init:
+    build: ./warden-catalogue
+    image: warden-catalogue-jobs
+    profiles: ["catalogue"]
+    user: "0:0"
+    command: ["python", "-m", "catalogue", "keys"]
+    environment:
+      CATALOGUE_KEYS_DIR: /keys
+    volumes:
+      - catalogue-keys:/keys
+
+  catalogue-migrate:
+    image: docker.getcollate.io/openmetadata/server:2.0.7
+    profiles: ["catalogue"]
+    command: "./bootstrap/openmetadata-ops.sh migrate"
+    environment: *server-env
+    volumes:
+      - catalogue-keys:/opt/openmetadata/keys:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      catalogue-search:
+        condition: service_healthy
+      catalogue-keys-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+
+  catalogue:
+    image: docker.getcollate.io/openmetadata/server:2.0.7
+    profiles: ["catalogue"]
+    restart: unless-stopped
+    environment: *server-env
+    volumes:
+      - catalogue-keys:/opt/openmetadata/keys:ro
+    ports:
+      - "127.0.0.1:8585:8585"
+    depends_on:
+      catalogue-search:
+        condition: service_healthy
+      catalogue-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8586/healthcheck"]
+      start_period: 180s
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+
+  # Reads Warden's schemas into the catalogue, then tags personal data, the tables critical
+  # checks guard, and lineage. Runs once when the profile starts; run it again any time with
+  #   .\infra\scripts\compose.ps1 --profile catalogue run --rm catalogue-ingest
+  catalogue-ingest:
+    build: ./warden-catalogue
+    image: warden-catalogue-jobs
+    profiles: ["catalogue"]
+    command: ["python", "-m", "catalogue", "ingest"]
+    environment:
+      CATALOGUE_URL: http://catalogue:8585
+      OPENMETADATA_ADMIN_PASSWORD: ${OPENMETADATA_ADMIN_PASSWORD:?run infra/scripts/fill-secrets.py (phase 7b)}
+      POSTGRES_HOST_PORT: postgres:5432
+      PGPASS_WARDEN_QUALITY: ${PGPASS_WARDEN_QUALITY:?add PGPASS_WARDEN_QUALITY to .env (phase 7b)}
+    depends_on:
+      catalogue:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g

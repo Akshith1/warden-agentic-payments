@@ -38,6 +38,18 @@ Personal data masked by `warden-pii` (Presidio with spaCy, plus receipt-specific
 | Audit log | `warden-control` (SQLite in a volume), hash-chained | Steps, decisions, refusals, stops; the privacy step records only kinds and counts of personal data, never values |
 | Model use per agent (tokens, cost) | `warden-control` | No content, only counts |
 
+## The data catalogue (phase 7b, optional)
+
+OpenMetadata, started with the `catalogue` profile, holds Warden's table and column names, types, descriptions, tags and lineage, never rows: ingestion is metadata only, with no profiler and no sample data. It reads the schema as `warden_quality`, so it sees the ledger and `invoice_inbox` and nothing else. Columns tagged as personal data there:
+
+| Column | Tag | Why |
+| --- | --- | --- |
+| `historical_payments.remit_account` | PII.Sensitive | The account paid; a person's bank account when the payee is a sole trader |
+| `invoice_inbox.text` | PII.Sensitive | Receipt text as read, with cashiers' names and phone numbers; masked before any model |
+| `vendor_aliases.confirmed_by` | PII.NonSensitive | The username of the person who confirmed an alias |
+
+The tags are set by `warden-catalogue/catalogue/classify.py`; a test keeps that file and this table in step.
+
 ## Leaving the machine
 
 Only the model gateway (LiteLLM) talks to model providers (OpenAI, Groq). What it sends is the masked text and re-masked extracted fields. The OCR and PII services have no route to the internet at all.
