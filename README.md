@@ -9,6 +9,7 @@ This repository is being built in phases (see [Roadmap](#roadmap)):
 - **Phase 3.5, the vendor master:** when an approver recognises a "first-seen" vendor as one already paid under another name, they link the two in the console. The link is stored as a confirmed alias, so both names share one payment history and one duplicate-invoice check. Nothing is ever matched automatically. See [Vendor aliases](#vendor-aliases-phase-35) and [the phase 3 and 3.5 live run](docs/live-runs/2026-11-phase-3.md).
 - **Phase 4, policies:** every approval and every ledger write is checked a second time by a separate Cedar policy service, with rules in readable files under `policies/`. The service adds a rule over time (no more than 3 agent-approved payments to one vendor in 24 hours) and refuses to start on a policy change that fails validation. Each role's capability manifest is a second, independent lock on the ledger. See [Policies](#policies-phase-4) and [the phase 4 live run](docs/live-runs/2026-11-phase-4.md).
 - **Phase 5, runtime safety:** every document is screened by a guardrail before any agent reads it: fixed rules for known prompt-injection phrases plus the `gpt-oss-safeguard` safety model, and either one stops the run. Scanned invoices are read by a sandboxed OCR service with no network, a read-only filesystem and a kernel-enforced Landlock jail around Tesseract. See [Runtime safety](#runtime-safety-phase-5) and [the phase 5 live run](docs/live-runs/2026-11-phase-5.md).
+- **Phase 6, identity:** people sign in to the console through Keycloak, and every approval is recorded under their own account. Approval is by role (approvers up to 50,000.00, controllers above), and nobody can approve an invoice they submitted. Cedar enforces both, and the backend verifies every token. See [Sign-in and roles](#sign-in-and-roles-phase-6).
 - **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried. Run live, including the first fully automatic payment; see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md).
 
 ## How a payment flows today
@@ -57,6 +58,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `warden-ledger` | Double-entry ledger, vendor master, payment history | http://localhost:8101/docs |
 | `warden-policy` | Cedar policy decision point; validates `policies/` at startup | http://localhost:8102/docs |
 | `warden-ocr` | Sandboxed OCR for scanned invoices; on an internal network only | (none: no published port) |
+| `keycloak` | Sign-in for people: the `warden` realm, roles and users | http://localhost:8180 (admin at `/admin`) |
 | `litellm` | LLM gateway with the three routes | http://localhost:4000 |
 | `mlflow` | Prompt Registry and gate results | http://localhost:5500 |
 | `postgres` | One database and role per service | localhost:15432 |
@@ -84,20 +86,29 @@ sh infra/scripts/compose.sh run --rm data-loader
 
 Expect output like `USAspending (...): N new awards`, then `sroie test: 60 new documents` and so on.
 
+Since phase 6 every backend call needs a sign-in (see [Sign-in and roles](#sign-in-and-roles-phase-6)); the console handles it for you. From a shell, get a token first:
+
+```sh
+TOKEN=$(curl -s -X POST localhost:8180/realms/warden/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=warden-cli -d username=clerk -d "password=<clerk's password>" \
+  | python -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+AUTH="Authorization: Bearer $TOKEN"
+```
+
 Submit a real receipt and follow it:
 
 ```sh
-sh infra/scripts/compose.sh run --rm data-loader python -m loader.submit --count 1
-curl -s localhost:8100/runs | python -m json.tool
-curl -s localhost:8100/runs/<run_id> | python -m json.tool
+sh infra/scripts/compose.sh run --rm -e WARDEN_USERNAME=clerk data-loader python -m loader.submit --count 1
+curl -s localhost:8100/runs -H "$AUTH" | python -m json.tool
+curl -s localhost:8100/runs/<run_id> -H "$AUTH" | python -m json.tool
 ```
 
-A vendor the ledger has never paid always goes to human review first. Approve it:
+A vendor the ledger has never paid always goes to human review first. Approve it as someone with the approver role who didn't submit it (a token for `amira` or `rajesh`):
 
 ```sh
-curl -s "localhost:8100/runs?status=pending_human" | python -m json.tool
-curl -s -X POST localhost:8100/runs/<run_id>/resume \
-  -H 'content-type: application/json' -d '{"decision": "approve", "approver": "controller-1"}'
+curl -s "localhost:8100/runs?status=pending_human" -H "$AUTH" | python -m json.tool
+curl -s -X POST localhost:8100/runs/<run_id>/resume -H "$APPROVER_AUTH" \
+  -H 'content-type: application/json' -d '{"decision": "approve"}'
 ```
 
 After the 20-second settlement hold the run shows `settled`. Then check the money moved and the vendor now has history:
@@ -109,15 +120,15 @@ curl -s localhost:8101/accounts -H "X-API-Key: $(grep ^VENDOR_LOOKUP_KEY .env | 
 Submit another receipt from the same shop (SROIE repeats vendors) and it can now take the automatic path, because trust is earned from the ledger, not claimed by the invoice:
 
 ```sh
-sh infra/scripts/compose.sh run --rm data-loader python -m loader.submit --vendor "<shop name>" --count 2
+sh infra/scripts/compose.sh run --rm -e WARDEN_USERNAME=clerk data-loader python -m loader.submit --vendor "<shop name>" --count 2
 ```
 
-You can also paste any invoice text: `POST /runs {"invoice_text": "..."}` at http://localhost:8100/docs.
+You can also paste any invoice text: `POST /runs {"invoice_text": "..."}` at http://localhost:8100/docs (click **Authorize** and paste a token first).
 
 If a run stops on a provider error (an exhausted API credit, a rate limit), it shows `failed` with the error. Fix the cause and continue it from the step that failed; finished steps are not repeated or re-billed:
 
 ```sh
-curl -s -X POST localhost:8100/runs/<run_id>/retry
+curl -s -X POST localhost:8100/runs/<run_id>/retry -H "$AUTH"
 ```
 
 ## The console (phase 3)
@@ -133,6 +144,43 @@ Open http://localhost:3100 once the stack is up.
 | Governance | The Extraction prompt version in use and the rules enforced in code, read from the running backend. |
 
 The browser only talks to the console's own server, which relays a fixed list of backend endpoints and read-only ledger endpoints; the ledger key stays on the server, and the console cannot write to the ledger. Pages refresh by polling every 1.5 to 5 seconds rather than over a WebSocket, which is enough for runs that change every few seconds. The approver's name is typed in until phase 6 adds Keycloak logins.
+
+## Sign-in and roles (phase 6)
+
+Until phase 5, the approver typed a name into a box. Now people sign in through Keycloak, and Warden takes their name and roles from a token Keycloak signed.
+
+| Role | Can |
+| --- | --- |
+| `submitter` | Submit invoices, see runs, the ledger and the rules |
+| `approver` | Decide escalated invoices up to 50,000.00; link vendor names |
+| `controller` | Decide escalated invoices of any amount |
+
+The realm (`infra/keycloak/realm-warden.json`) is imported on Keycloak's first start, with three people:
+
+| User | Roles | First password |
+| --- | --- | --- |
+| `rajesh` | submitter, approver, controller | `change-me-rajesh` |
+| `amira` | submitter, approver | `change-me-amira` |
+| `clerk` | submitter | `change-me-clerk` |
+
+Each first password works once. Keycloak makes you choose a new one (12 characters or more) at the first console sign-in, and refuses script sign-ins until you have.
+
+How it holds together:
+
+- **The console never sees a password.** "Sign in" sends you to Keycloak's own page. The console gets a code back and exchanges it for tokens with PKCE, then keeps them in httpOnly cookies that only its server reads. It sends the token with every backend call.
+- **The backend checks every token itself** (`warden-backend/app/auth.py`): Keycloak's signature, issuer, audience `warden-backend` and expiry. Every endpoint except `/health` requires one. The approver's name comes only from the token, so nothing typed in a request can claim to be someone else.
+- **Roles are checked twice.** The API turns away anyone without the right role. Cedar then decides each approval from the roles in the token (`policies/00-who-may-act.cedar`), including the tiers.
+- **Four eyes** (`policies/08-four-eyes.cedar`): every run records who submitted it, and Cedar refuses an approval by that same person, whatever their role. The run stays waiting for someone else. The console shows the refusal as it happens, and the graph checks again before money moves.
+- **Sign-out ends the Keycloak session too.** The next sign-in asks for the password again.
+
+From PowerShell, `.\infra\scripts\token.ps1 <username>` asks for the password and returns headers for `Invoke-RestMethod`. The data loader's `submit` command signs in the same way (`-e WARDEN_USERNAME=clerk`).
+
+### Try it
+
+1. Open http://localhost:3100 and sign in as **clerk**. Choose a new password when asked.
+2. Submit an invoice from a vendor the ledger has never paid. As clerk you can see it waiting, but there's no decision form: "Waiting for a person with the approver or controller role".
+3. Sign out, sign in as **amira**, open the run and approve it. The trail shows "Approved by Amira Approver" and "Policy engine checked it: Allowed for amira (approvers-may-approve)".
+4. Still as amira, submit another invoice and try to approve it yourself. Cedar refuses: "you submitted this invoice, so another person must approve it".
 
 ## Runtime safety (phase 5)
 
@@ -229,9 +277,10 @@ Cedar returns `Deny`. The manifests deny every role except payment execution.
 
 **20, the 24-hour limit.** Submit four invoices from a vendor with history. The first three are normally paid by the agents (unless one of them escalates for its own reasons); the fourth goes to a person with "the vendor already had 3 payments approved in the last 24 hours":
 ```powershell
+$h = .\infra\scripts\token.ps1 clerk     # asks for clerk's password
 foreach ($n in 461..464) {
   $text = "OJC Marketing Sdn Bhd`nTax Invoice No: OJC-2026-0$n`nDate: 02/11/2026`nPrinting paper A4 x 5   RM 42.50`nInk cartridge black x 1   RM 22.00`nTotal: RM 64.50"
-  Invoke-RestMethod -Method Post -Uri http://localhost:8100/runs -ContentType "application/json" -Body (@{invoice_text = $text} | ConvertTo-Json)
+  Invoke-RestMethod -Method Post -Uri http://localhost:8100/runs -Headers $h -ContentType "application/json" -Body (@{invoice_text = $text} | ConvertTo-Json)
 }
 ```
 
@@ -309,7 +358,7 @@ cd warden-ocr && pip install -r requirements.txt -r requirements-dev.txt && pyte
 cd warden-backend && pip install -r requirements.txt -r requirements-dev.txt && pytest -q   # starts the ledger and policy service itself
 ```
 
-They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 5 adds the guardrail's rules against injected and ordinary receipt text, blocked runs that no agent ever reads, the safety model catching a rewording, failing closed when the guardrail is down, scanned invoices through OCR, and (in `warden-ocr`) real Tesseract under a real Landlock jail. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
+They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 6 adds token checks with real signed tokens (good, wrong key, wrong issuer, wrong audience, expired), roles on every endpoint, approval tiers, and four eyes in both the API and the graph. Phase 5 adds the guardrail's rules against injected and ordinary receipt text, blocked runs that no agent ever reads, the safety model catching a rewording, failing closed when the guardrail is down, scanned invoices through OCR, and (in `warden-ocr`) real Tesseract under a real Landlock jail. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
 
 ## Known simplifications
 
@@ -319,7 +368,8 @@ These are deliberate and each one is removed by a named later phase.
 - **One gateway key for all agents.** Phase 8 gives each agent its own key, route allowlist and daily budget.
 - **The approval rules are written twice**, in code (`config.py`) and in Cedar (`policies/`), on purpose: two independent checks. Changing a limit means changing both; the stricter one wins until they agree.
 - **The 24-hour limit's memory of in-flight approvals is in the policy service's memory.** After a restart only the ledger's settled payments count until new approvals come in. Phase 9's audit log is the durable record.
-- **Any person may approve any amount.** Approval tiers need real identities, which phase 6 (Keycloak) adds.
+- **Keycloak runs in development mode** with its own file database in a Docker volume, over plain HTTP on localhost. The Azure profile (phase 11) puts sign-in behind TLS with Entra ID.
+- **The ledger's write key and the gateway key are still in `.env`.** Phase 6b moves them into a secrets vault (Infisical), fetched fresh before each use, and gives each service its own workload identity (SPIRE).
 - **Only the Extraction prompt is registry-managed.** It is the one the gate can score against labels. The Risk, Approval and Critic prompts are versioned in git; scoring them needs labelled fraud decisions, which no public dataset here provides.
 - **A promoted prompt takes effect on restart**, not live, matching how the backend loads it once at startup.
 - **No kill switch yet.** Phase 9.
@@ -337,7 +387,8 @@ These are deliberate and each one is removed by a named later phase.
 | 3.5 | Vendor master: human-confirmed aliases (done) | phase 3 live-run finding |
 | 4 | Cedar policies, 24-hour vendor limit, capability manifests (done) | 06, 07, 09, 10, 20 |
 | 5 | Guardrail (rules + safety model), sandboxed OCR with Landlock (done); confidence gate, dry run and hold were built in phases 1-2 | 08, 11, 16, 17, 18 |
-| 6 | Keycloak, SPIRE, Infisical | 02, 20 |
+| 6 | Keycloak sign-in, approval roles and tiers, four eyes (done) | identity |
+| 6b | Infisical secrets vault, SPIRE workload identity | 02 |
 | 7 | OpenMetadata, Presidio, Great Expectations | 03, 22 |
 | 8 | Per-agent LiteLLM keys and budgets | 12 |
 | 9 | Hash-chained WORM audit log, kill switch, OpenTelemetry, Langfuse, Grafana | 13, 14, 15, 19, 24-27 |

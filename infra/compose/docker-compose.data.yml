@@ -18,6 +18,7 @@ services:
       PGPASS_WARDEN_LEDGER: ${PGPASS_WARDEN_LEDGER:?set in .env}
       PGPASS_WARDEN_BACKEND: ${PGPASS_WARDEN_BACKEND:?set in .env}
       BACKEND_URL: http://warden-backend:8000
+      KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/warden/protocol/openid-connect/token
       SROIE_TRAIN_LIMIT: ${SROIE_TRAIN_LIMIT:-200}
       SROIE_TEST_LIMIT: ${SROIE_TEST_LIMIT:-60}
       CORD_TRAIN_LIMIT: ${CORD_TRAIN_LIMIT:-100}

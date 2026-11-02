@@ -65,6 +65,7 @@ class RunState(TypedDict, total=False):
     invoice_text: str
     image_base64: str | None  # a scanned invoice, cleared once the OCR step has read it
     source: str
+    submitted_by: str  # username from the submitter's verified login (phase 6)
     guardrail: dict
     status: Status
     status_reason: str
