@@ -85,6 +85,9 @@ def test_reference_and_inbox_problems_are_warnings(clean, events):
         c.execute("UPDATE invoice_inbox SET text = 'Siti 0123' WHERE external_key = 's-1'")
         c.execute("UPDATE invoice_inbox SET split = 'validation' WHERE external_key = 's-2'")
         c.execute("UPDATE invoice_inbox SET ground_truth = '{\"entities\": {}}' WHERE external_key = 's-3'")
+        # Live phase 7b finding: a train receipt with an empty total isn't scored, so it isn't flagged.
+        c.execute("UPDATE invoice_inbox SET ground_truth = '{\"entities\": {\"total\": \"\"}}' "
+                  "WHERE external_key = 's-25'")
         c.execute("UPDATE invoice_inbox SET split = 'train' WHERE external_key IN ('s-4', 's-5', 's-6')")
     result = runner.run_checks()
     checks = by_id(result)
