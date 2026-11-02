@@ -179,6 +179,8 @@ table.lines { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
 @keyframes stamp { from { transform: rotate(-4deg) scale(1.6); opacity: 0; } to { transform: rotate(-4deg) scale(1); opacity: 1; } }
 
 /* ---- submit, ledger, governance ---- */
+.upload { margin: 2rem 0; }
+.file input { font: inherit; padding: 0.6rem; border: 1px dashed var(--steel); border-radius: 6px; background: var(--sheet); max-width: 100%; }
 .paste { display: grid; gap: 0.6rem; max-width: 46rem; }
 .paste label { font-weight: 600; }
 .paste textarea { font: inherit; padding: 0.75rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); resize: vertical; }

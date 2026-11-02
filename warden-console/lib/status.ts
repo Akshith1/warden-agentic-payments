@@ -23,6 +23,8 @@ export function statusOf(s: string) {
 export const FINISHED = new Set(["settled", "rejected", "blocked", "failed"]);
 
 export const STEP_LABEL: Record<string, string> = {
+  ocr: "Sandboxed OCR read the image",
+  guardrail: "Guardrail screened the text",
   extraction: "Extraction agent read the invoice",
   risk_scoring: "Risk agent scored it",
   approval: "Approval agent decided",

@@ -42,6 +42,29 @@ export default function SubmitPage() {
         </button>
       </form>
 
+      <section className="upload">
+        <h2>Or upload a scanned invoice</h2>
+        <p className="muted">
+          A PNG, JPEG or TIFF image, up to 5 MB. It is read by the sandboxed OCR service (no network, read-only,
+          kernel-restricted), then screened by the guardrail before any agent sees the text.
+        </p>
+        <label className="file">
+          <span className="visually-hidden">Invoice image</span>
+          <input type="file" accept="image/png,image/jpeg,image/tiff" disabled={busy !== null}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              if (file.size > 5 * 2 ** 20) { setError("That image is larger than 5 MB."); return; }
+              const bytes = new Uint8Array(await file.arrayBuffer());
+              let binary = "";
+              for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+              send("/api/backend/runs/image", { image_base64: btoa(binary), filename: file.name }, "image");
+            }} />
+        </label>
+        {busy === "image" && <p className="muted">Uploading…</p>}
+      </section>
+
       <section className="inbox">
         <h2>Or pick a real receipt</h2>
         <p className="muted">Held-out receipts from the SROIE dataset, loaded by the data loader. The label is what a human annotator wrote; the agents don't see it.</p>

@@ -6,10 +6,15 @@ LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "")
 
 ROUTE_REASONING = "warden-reasoning"
 ROUTE_ROUTINE = "warden-routine"
+ROUTE_GUARDRAIL = "warden-guardrail"  # gpt-oss-safeguard: a policy-following safety classifier
 
 LEDGER_URL = os.environ.get("LEDGER_URL", "http://warden-ledger:8000")
 LEDGER_WRITE_KEY = os.environ.get("LEDGER_WRITE_KEY", "")
 VENDOR_LOOKUP_KEY = os.environ.get("VENDOR_LOOKUP_KEY", "")
+
+# Phase 5: the sandboxed OCR service, reachable only on the internal warden-ocr network.
+OCR_URL = os.environ.get("OCR_URL", "http://warden-ocr:8000")
+MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(5 * 2**20)))
 
 # Phase 4: Cedar policy decision point. Every approval and ledger write is checked there too.
 POLICY_URL = os.environ.get("POLICY_URL", "http://warden-policy:8000")

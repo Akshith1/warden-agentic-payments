@@ -3,6 +3,11 @@ networks:
   default:
     name: warden-net
     external: true
+  # Phase 5: the OCR sandbox's only network. internal: no route to the internet,
+  # and nothing on it but the OCR service and the backend.
+  ocr:
+    name: warden-ocr
+    internal: true
 
 services:
   warden-ledger:
@@ -44,13 +49,36 @@ services:
         limits:
           memory: 256m
 
+  warden-ocr:
+    build: ./warden-ocr
+    restart: unless-stopped
+    networks: [ocr]
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /work:size=64m,uid=10001,gid=10001,mode=0700
+      - /tmp:size=16m,uid=10001,gid=10001,mode=0700
+    pids_limit: 64
+    environment:
+      OCR_WORK_DIR: /work
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+          cpus: "1.0"
+
   warden-backend:
     build: ./warden-backend
     restart: unless-stopped
+    networks: [default, ocr]   # the only service on both networks
     depends_on:
       warden-ledger:
         condition: service_healthy
       warden-policy:
+        condition: service_healthy
+      warden-ocr:
         condition: service_healthy
       # Start after MLflow so the promoted prompt is found; not required, because the
       # backend falls back to its bundled prompt when MLflow is absent.
@@ -64,6 +92,7 @@ services:
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY:?set in .env}
       LEDGER_URL: http://warden-ledger:8000
       POLICY_URL: http://warden-policy:8000
+      OCR_URL: http://warden-ocr:8000
       LEDGER_WRITE_KEY: ${LEDGER_WRITE_KEY:?set in .env}
       VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
       ROUTINE_AMOUNT_THRESHOLD: ${ROUTINE_AMOUNT_THRESHOLD:-5000}
