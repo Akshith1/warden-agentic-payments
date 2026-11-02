@@ -3,6 +3,7 @@
 // leaves the server.
 export const BACKEND_URL = process.env.BACKEND_URL ?? "http://warden-backend:8000";
 export const LEDGER_URL = process.env.LEDGER_URL ?? "http://warden-ledger:8000";
+export const CONTROL_URL = process.env.CONTROL_URL ?? "http://warden-control:8000";
 export const VENDOR_LOOKUP_KEY = process.env.VENDOR_LOOKUP_KEY ?? "";
 
 export async function relay(url: string, init: RequestInit = {}): Promise<Response> {

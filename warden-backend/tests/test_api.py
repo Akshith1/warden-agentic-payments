@@ -209,3 +209,39 @@ def test_people_decide_by_role_and_never_their_own_invoice(api):
     assert review["approver"] == "rajesh" and review["approver_name"] == "Rajesh Vasa"
     me = api.get("/me", headers={"X-Test-User": "clerk"}).json()
     assert me == {"username": "clerk", "name": "Accounts Clerk", "roles": ["submitter"]}
+
+
+def test_stopped_run_fails_with_the_reason_then_retries_and_every_step_is_on_the_record(ledger, monkeypatch, switch):
+    import sqlite3
+
+    from .conftest import CONTROL_DB
+    from .test_graph import seed_history
+    seed_history(ledger, "Acme Supply", [100, 105])
+    fake = FakeLLM(invoice(vendor="Acme Supply", total=65.0))
+
+    def build(deps, cp):
+        deps.llm, deps.ledger = fake, ledger
+        deps.sleep = lambda s: switch.trip(reason="checking a supplier")  # tripped during the hold
+        return build_graph(deps, cp)
+    monkeypatch.setattr(main.config, "MLFLOW_TRACKING_URI", "")
+    monkeypatch.setattr(main, "build_graph", build)
+    with TestClient(main.app) as api:
+        run_id = api.post("/runs", json={"invoice_text": "Acme ..."}).json()["run_id"]
+        row = wait_for(api, run_id, "failed")
+        assert row["status_reason"] == "kill switch: kill switch is on: checking a supplier (by tester)"
+        assert api.post(f"/runs/{run_id}/retry").status_code == 202
+        wait_for(api, run_id, "failed")  # still on: stops again at the same place
+        switch.reset()
+        rt = main.rt
+        rt.deps.sleep = lambda s: None
+        assert api.post(f"/runs/{run_id}/retry").status_code == 202
+        wait_for(api, run_id, "settled")
+
+    db = sqlite3.connect(CONTROL_DB)
+    events = db.execute("SELECT type, actor, json_extract(payload, '$.step') FROM audit WHERE run_id = ? "
+                        "ORDER BY seq", (run_id,)).fetchall()
+    steps = [e[2] for e in events if e[0] == "run_step"]
+    assert events[0][:2] == ("run_submitted", "clerk")
+    assert steps == ["guardrail", "extraction", "risk_scoring", "approval", "critic", "policy", "dry_run",
+                     "settlement_hold", "commit"]  # each once, in order, despite two stops and retries
+    assert [e[0] for e in events].count("run_stopped") == 2

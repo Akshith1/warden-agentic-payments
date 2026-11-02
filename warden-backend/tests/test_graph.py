@@ -488,3 +488,53 @@ def test_four_eyes_inside_the_graph(checkpointer, ledger, ledger_url):
     assert s["status"] == "blocked"
     assert s["status_reason"] == "policy refused: you submitted this invoice, so another person must approve it"
     assert cash(ledger_url) == 10000
+
+
+# ---- Phase 9: the kill switch ------------------------------------------------------------------
+
+def test_kill_switch_during_the_hold_stops_the_payment(checkpointer, ledger, ledger_url, switch):
+    # Scenario 19: someone stops payments while this one is in its settlement hold.
+    import pytest
+    from app.control_client import KillSwitchOn
+    seed_history(ledger, "Acme Supply", [100, 105])
+    holds = []
+
+    def hold(seconds):  # someone presses Stop during the first hold only
+        if not holds:
+            switch.trip(reason="suspicious batch")
+        holds.append(seconds)
+
+    graph = build_graph(Deps(llm=FakeLLM(invoice(total=70.0)), ledger=ledger, sleep=hold), checkpointer)
+    cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    with pytest.raises(KillSwitchOn, match="kill switch is on: suspicious batch"):
+        graph.invoke({"run_id": "x", "invoice_text": "x", "source": "paste", "audit_trail": []}, cfg)
+    assert cash(ledger_url) == 10000 and graph.get_state(cfg).next == ("settle",)
+
+    switch.reset()  # a controller resumes payments; retrying continues from the hold
+    graph.invoke(None, cfg)
+    assert state(graph, cfg)["status"] == "settled" and cash(ledger_url) == 10000 - 70
+    assert len(holds) == 2  # the retry waits out a fresh hold before paying
+
+
+def test_while_stopped_the_agents_approve_nothing(checkpointer, ledger, ledger_url, switch):
+    import pytest
+    from app.control_client import KillSwitchOn
+    seed_history(ledger, "Acme Supply", [100, 105])
+    switch.trip()
+    fake = FakeLLM(invoice(total=55.0))
+    with pytest.raises(KillSwitchOn):
+        run(checkpointer, ledger, fake)
+    assert cash(ledger_url) == 10000
+
+
+def test_a_paused_agent_is_refused_but_payment_execution_is_not(checkpointer, ledger, ledger_url, switch):
+    import pytest
+    from app.control_client import KillSwitchOn
+    seed_history(ledger, "Acme Supply", [100, 105])
+    switch.trip(scope="agent", target="approval")
+    with pytest.raises(KillSwitchOn, match="the approval agent is paused"):
+        run(checkpointer, ledger, FakeLLM(invoice(total=55.0)))
+    # A person can still decide an escalated run while one agent is paused.
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(vendor="Brand New LLC", total=20.0)))
+    graph.invoke(Command(resume={"decision": "approve", "approver": "rajesh", "roles": ["approver"]}), cfg)
+    assert state(graph, cfg)["status"] == "settled"
