@@ -33,3 +33,14 @@ export function plainReason(reason: string | null | undefined): string | null {
   if (reason.includes("insufficient funds")) return "Not enough cash in the operating account to pay this.";
   return reason;
 }
+
+// One line for the Runs list. Provider errors are pages of JSON; the run page keeps the full text.
+export function shortReason(reason: string | null | undefined): string | null {
+  const plain = plainReason(reason);
+  if (!plain || !plain.startsWith("error:")) return plain;
+  const code = plain.match(/Error code: (\d{3})/)?.[1];
+  if (/no credits remaining|insufficient_quota/i.test(plain)) return "Model provider: out of API credit. Add credit, then retry.";
+  if (code === "429") return "Model provider: rate limit reached. Wait, then retry.";
+  if (code) return `Model provider refused the request (${code}). Open the run for details.`;
+  return plain.length > 120 ? `${plain.slice(0, 117)}…` : plain;
+}

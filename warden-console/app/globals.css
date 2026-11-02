@@ -101,6 +101,7 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--sheet); b
 .runs td { padding: 0.65rem 0.9rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
 .runs tr:last-child td { border-bottom: 0; }
 .runs tbody tr:hover { background: rgba(28, 42, 53, 0.025); }
+.runs tr.clickable { cursor: pointer; }
 .row-link { font-weight: 600; text-decoration: none; }
 .row-link:hover { text-decoration: underline; }
 .why { color: var(--steel); font-size: var(--step--1); max-width: 34ch; }
