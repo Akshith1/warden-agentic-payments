@@ -121,12 +121,13 @@ CHECKS: list[Check] = [
           lambda: gx.expectations.ExpectColumnValuesToBeInSet(column="split", value_set=["train", "test"]),
           show_values=True),
     Check("inbox-labels", "inbox", "backend", "invoice_inbox", WARNING,
-          "Every loaded receipt has the labels the gate scores against",
-          "A receipt without a labelled total can't be scored, so the gate would judge the prompt "
-          "on fewer documents than it reports.",
-          rows("SELECT id FROM {batch} WHERE (source = 'sroie' "
+          "Every test receipt has the labels the gate scores against",
+          "The gate scores prompts on the test split. A test receipt without a labelled total can't "
+          "be scored, so the gate would judge the prompt on fewer documents than it reports. (Train "
+          "receipts aren't scored; the public SROIE set has at least one with an empty total.)",
+          rows("SELECT id FROM {batch} WHERE split = 'test' AND ((source = 'sroie' "
                "AND coalesce(ground_truth->'entities'->>'total', '') = '') "
-               "OR (source = 'cord' AND ground_truth->'gt_parse' IS NULL)")),
+               "OR (source = 'cord' AND ground_truth->'gt_parse' IS NULL))")),
     Check("eval-set-size", "inbox", "backend", "invoice_inbox", WARNING,
           "The evaluation gate has at least 20 labelled test documents",
           "Below that, one document moves the score by five points or more, and promotion is luck.",
