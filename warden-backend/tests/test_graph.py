@@ -37,9 +37,11 @@ class FakeLLM:
         self.guardrail = guardrail or GuardrailVerdict(safe=True, category="none", reason="ordinary invoice")
         self.confidence, self.critic_agrees = confidence, critic_agrees
         self.calls = []
+        self.inputs = {}  # agent -> what the model was sent
 
     def __call__(self, agent, route, system, user, model):
         self.calls.append((agent, route))
+        self.inputs[agent] = user
         if model is GuardrailVerdict:
             return self.guardrail
         if model is InvoiceExtraction:
@@ -83,8 +85,8 @@ def test_known_vendor_routine_amount_settles(checkpointer, ledger, ledger_url):
     assert dict(fake.calls)["critic"] != dict(fake.calls)["approval"]  # critic on the other provider's route
     assert ledger.lookup_vendor("ACME SUPPLY")["payment_count"] == 4  # history grows only after settlement
     assert [e["step"] for e in s["audit_trail"]][-3:] == ["dry_run", "settlement_hold", "commit"]
-    assert s["audit_trail"][0]["step"] == "guardrail" and s["audit_trail"][0]["safe"] is True
-    extraction = s["audit_trail"][1]
+    assert [e["step"] for e in s["audit_trail"]][:2] == ["privacy", "guardrail"] and s["audit_trail"][1]["safe"]
+    extraction = s["audit_trail"][2]
     assert extraction["prompt_source"] == "bundled" and extraction["currency_assumed"] is True
 
 
@@ -395,7 +397,7 @@ def test_hidden_instructions_stop_the_run_before_extraction(checkpointer, ledger
     assert s["status"] == "blocked" and s["status_reason"].startswith("guardrail: possible instructions hidden")
     assert "Ignore all previous instructions" in s["status_reason"] and "pre-approved" in s["status_reason"]
     assert [a for a, _ in fake.calls] == ["guardrail"]  # no agent ever read it
-    assert [e["step"] for e in s["audit_trail"]] == ["guardrail"] and cash(ledger_url) == 10000
+    assert [e["step"] for e in s["audit_trail"]] == ["privacy", "guardrail"] and cash(ledger_url) == 10000
 
 
 def test_the_safety_model_catches_what_the_rules_miss(checkpointer, ledger):
@@ -407,7 +409,7 @@ def test_the_safety_model_catches_what_the_rules_miss(checkpointer, ledger):
     graph.invoke({"run_id": "x", "invoice_text": reworded, "source": "paste", "audit_trail": []}, cfg)
     s = state(graph, cfg)
     assert s["status"] == "blocked" and "(safety model)" in s["status_reason"]
-    assert s["audit_trail"][0]["rule_hits"] == [] and s["audit_trail"][0]["model_safe"] is False
+    assert s["audit_trail"][1]["rule_hits"] == [] and s["audit_trail"][1]["model_safe"] is False
 
 
 def test_guardrail_provider_down_means_failed_not_passed(checkpointer, ledger):
@@ -446,7 +448,7 @@ def test_scanned_invoice_goes_through_ocr_then_the_guardrail(checkpointer, ledge
                   "audit_trail": []}, cfg)
     s = state(graph, cfg)
     assert s["status"] == "settled" and cash(ledger_url) == 10000 - 60
-    assert [e["step"] for e in s["audit_trail"]][:3] == ["ocr", "guardrail", "extraction"]
+    assert [e["step"] for e in s["audit_trail"]][:4] == ["ocr", "privacy", "guardrail", "extraction"]
     assert s["audit_trail"][0]["landlock_abi"] == 7 and s["image_base64"] is None  # the image isn't kept
     assert s["invoice_text"] == ocr.text
 
@@ -538,3 +540,42 @@ def test_a_paused_agent_is_refused_but_payment_execution_is_not(checkpointer, le
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(vendor="Brand New LLC", total=20.0)))
     graph.invoke(Command(resume={"decision": "approve", "approver": "rajesh", "roles": ["approver"]}), cfg)
     assert state(graph, cfg)["status"] == "settled"
+
+
+# ---- Phase 7: no model sees personal data ----------------------------------------------------------
+
+def test_models_see_placeholders_and_the_ledger_gets_real_values(checkpointer, ledger, ledger_url):
+    seed_history(ledger, "Acme Supply", [100, 105], remit="5140-1234-5678")
+    text = ("ACME SUPPLY\nCashier: Siti Aminah\nQueries: siti@acme.example\n"
+            "Pay to account 5140-1234-5678\nTotal 60.00")
+    # The extraction model only ever sees placeholders, so it answers with one for the account.
+    fake = FakeLLM(invoice(total=60.0, remit="<BANK_ACCOUNT_1>"))
+    graph = build_graph(Deps(llm=fake, ledger=ledger, sleep=lambda s: None), checkpointer)
+    cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    graph.invoke({"run_id": "x", "invoice_text": text, "source": "paste", "audit_trail": []}, cfg)
+    s = state(graph, cfg)
+
+    for agent in ("guardrail", "extraction", "risk-scoring", "approval", "critic"):
+        sent = fake.inputs[agent]
+        assert "Siti Aminah" not in sent and "siti@acme.example" not in sent and "5140-1234-5678" not in sent, agent
+    assert "<PERSON_1>" in fake.inputs["extraction"] and "<BANK_ACCOUNT_1>" in fake.inputs["risk-scoring"]
+
+    assert s["extraction"]["remit_to_account"] == "5140-1234-5678"  # real value back, in code
+    assert "remit-to account differs" not in " ".join(s.get("escalation_reasons") or [])  # same account as before
+    assert s["status"] == "settled" and cash(ledger_url) == 10000 - 60
+    privacy = s["audit_trail"][0]
+    assert privacy["step"] == "privacy" and privacy["masked"] == {"EMAIL_ADDRESS": 1, "PERSON": 1, "BANK_ACCOUNT": 1}
+    assert "Siti" not in str(privacy)  # the trail says what kind, never the value
+    assert s["masked_text"].startswith("ACME SUPPLY\nCashier: <PERSON_1>")
+
+
+def test_no_pii_service_no_model_call(checkpointer, ledger):
+    import pytest
+    from app.pii_client import PiiClient
+    fake = FakeLLM(invoice())
+    graph = build_graph(Deps(llm=fake, ledger=ledger, sleep=lambda s: None, pii=PiiClient("http://127.0.0.1:9")),
+                        checkpointer)
+    cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    with pytest.raises(httpx.ConnectError):
+        graph.invoke({"run_id": "x", "invoice_text": "Cashier: Siti", "source": "paste", "audit_trail": []}, cfg)
+    assert fake.calls == []

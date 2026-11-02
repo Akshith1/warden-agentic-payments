@@ -1,6 +1,7 @@
 import json
 
 from .. import config
+from ..privacy import shield
 from ..schemas import CriticReview, RunState
 from . import Deps, audit, prompt
 from .approval import rules_context
@@ -9,9 +10,9 @@ from .approval import rules_context
 def run(state: RunState, deps: Deps) -> dict:
     # Approval runs on warden-reasoning (OpenAI); the critic deliberately uses
     # warden-routine (Groq) so the second opinion comes from a different provider.
-    evidence = json.dumps({"invoice": state["extraction"], "vendor_history": state["vendor"],
-                           "risk": state["risk"], "decision_under_review": state["approval"],
-                           "rules_already_enforced": rules_context()},
+    evidence = json.dumps(shield({"invoice": state["extraction"], "vendor_history": state["vendor"],
+                                  "risk": state["risk"], "decision_under_review": state["approval"],
+                                  "rules_already_enforced": rules_context()}, state.get("pii_mapping") or {}),
                           default=str, indent=2)
     review = deps.llm("critic", config.ROUTE_ROUTINE, prompt("critic"), evidence, CriticReview)
 

@@ -102,6 +102,12 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
             <summary>Invoice text as received</summary>
             <pre>{state.invoice_text}</pre>
           </details>
+          {state.masked_text && state.masked_text !== state.invoice_text && (
+            <details className="source">
+              <summary>What the models saw (personal data masked)</summary>
+              <pre>{state.masked_text}</pre>
+            </details>
+          )}
         </article>
 
         <section className="trail" aria-label="What each agent did">
@@ -130,6 +136,14 @@ function Step({ entry, previous }: { entry: TrailEntry; previous?: TrailEntry })
         ? `${e.chars} characters in ${e.seconds} s, kernel sandbox (Landlock ABI ${e.landlock_abi}), no network`
         : `Could not read it: ${e.error ?? "no text found"}`;
       break;
+    case "privacy": {
+      const masked = (e.masked as Record<string, number>) ?? {};
+      const kinds = Object.entries(masked).map(([k, n]) => `${n} ${k.toLowerCase().replace(/_/g, " ")}`);
+      detail = kinds.length
+        ? `Replaced before any model saw the text: ${kinds.join(", ")}`
+        : "No personal data found";
+      break;
+    }
     case "guardrail": {
       const hits = (e.rule_hits as { category: string; evidence: string }[]) ?? [];
       detail = e.safe

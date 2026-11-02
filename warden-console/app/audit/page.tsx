@@ -11,6 +11,7 @@ function summary(e: AuditEntry): string {
     case "run_submitted": return `Submitted (${p.source})`;
     case "run_step": {
       const label = STEP_LABEL[String(p.step)] ?? String(p.step);
+      if (p.step === "privacy") return `Personal data masked: ${p.total ?? 0} value(s)`;
       const extra = p.decision ? `: ${p.decision}` : p.outcome ? `: ${p.outcome}` : p.ok === false ? ": refused" : "";
       return `${label}${extra}${p.vendor ? ` · ${p.vendor}` : ""}`;
     }

@@ -2,6 +2,7 @@ import json
 import re
 
 from .. import config
+from ..privacy import shield
 from ..schemas import RiskAssessment, RunState
 from . import Deps, audit, prompt
 
@@ -22,7 +23,9 @@ def run(state: RunState, deps: Deps) -> dict:
     vendor = deps.ledger_for("risk-scoring").lookup_vendor(ext["vendor_name"])
 
     route = config.ROUTE_REASONING if ext["total_amount"] > config.ROUTINE_AMOUNT_THRESHOLD else config.ROUTE_ROUTINE
-    evidence = json.dumps({"invoice": ext, "vendor_history": vendor}, default=str, indent=2)
+    # Personal data goes to the model as the placeholders the PII step chose (phase 7).
+    evidence = json.dumps(shield({"invoice": ext, "vendor_history": vendor}, state.get("pii_mapping") or {}),
+                          default=str, indent=2)
     risk = deps.llm("risk-scoring", route, prompt("risk_scoring"), evidence, RiskAssessment)
 
     reasons = []
