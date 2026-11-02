@@ -6,6 +6,7 @@ import re
 from datetime import date
 
 from .. import config
+from ..control_client import KillSwitchOn
 from ..schemas import RunState
 from . import Deps, audit
 
@@ -45,6 +46,8 @@ def dry_run(state: RunState, deps: Deps) -> dict:
     # checked by ledger_for() before each ledger call below.
     grant = deps.policy.authorize(("Agent", AGENT), "CreateLedgerEntry", payment={
         "amount": txn["postings"][0]["amount"], "currency": ext.get("currency") or "", "vendor": ext["vendor_name"]})
+    if grant.get("kill_switch"):
+        raise KillSwitchOn(grant["reasons"][0])
     if grant["decision"] != "Allow":
         reason = "; ".join(grant["reasons"])
         return {"status": "blocked", "status_reason": f"policy refused the ledger write: {reason}",
@@ -59,7 +62,9 @@ def dry_run(state: RunState, deps: Deps) -> dict:
 
 def settle(state: RunState, deps: Deps) -> dict:
     trail = audit("settlement_hold", seconds=config.SETTLEMENT_HOLD_SECONDS)
-    deps.sleep(config.SETTLEMENT_HOLD_SECONDS)  # phase 9 re-checks the kill switch here, right before commit
+    deps.sleep(config.SETTLEMENT_HOLD_SECONDS)
+    # The point of the hold: the kill switch is checked once more after it, right before money moves.
+    deps.control.ensure_running(AGENT)
 
     txn = _transaction(state)
     ledger = deps.ledger_for(AGENT)

@@ -23,6 +23,9 @@ KEYCLOAK_JWKS_URL = os.environ.get("KEYCLOAK_JWKS_URL",
                                    "http://keycloak:8080/realms/warden/protocol/openid-connect/certs")
 TOKEN_AUDIENCE = os.environ.get("TOKEN_AUDIENCE", "warden-backend")
 
+# Phase 9: the kill switch and the hash-chained audit log.
+CONTROL_URL = os.environ.get("CONTROL_URL", "http://warden-control:8000")
+
 # Phase 4: Cedar policy decision point. Every approval and ledger write is checked there too.
 POLICY_URL = os.environ.get("POLICY_URL", "http://warden-policy:8000")
 

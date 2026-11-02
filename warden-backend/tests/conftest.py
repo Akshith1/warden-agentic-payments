@@ -9,9 +9,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-LEDGER_PORT, POLICY_PORT = 18001, 18002
+LEDGER_PORT, POLICY_PORT, CONTROL_PORT = 18001, 18002, 18003
 os.environ.update({"LEDGER_WRITE_KEY": "t-write", "VENDOR_LOOKUP_KEY": "t-read", "OPENING_CASH": "10000.00",
-                   "POLICY_URL": f"http://127.0.0.1:{POLICY_PORT}"})
+                   "POLICY_URL": f"http://127.0.0.1:{POLICY_PORT}",
+                   "CONTROL_URL": f"http://127.0.0.1:{CONTROL_PORT}"})
 
 from langgraph.checkpoint.postgres import PostgresSaver  # noqa: E402
 from psycopg.rows import dict_row  # noqa: E402
@@ -23,6 +24,7 @@ from app.ledger_client import LedgerClient  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER_DIR = ROOT / "warden-ledger"
 POLICY_DIR = ROOT / "warden-policy"
+CONTROL_DIR = ROOT / "warden-control"
 
 
 def serve(cwd: Path, port: int, env: dict | None = None):
@@ -47,10 +49,51 @@ def ledger_url():
     proc.terminate()
 
 
+@pytest.fixture(scope="session")
+def control_url():
+    # The real control plane: kill switch and audit log, on a throwaway SQLite file. The
+    # repeated-refusal trigger is raised out of reach here; warden-control tests it itself.
+    if CONTROL_DB.exists():
+        CONTROL_DB.unlink()
+    proc, url = serve(CONTROL_DIR, CONTROL_PORT, {"CONTROL_DB": str(CONTROL_DB), "DENIAL_LIMIT": "100000"})
+    yield url
+    proc.terminate()
+
+
+CONTROL_DB = Path(os.environ.get("TMPDIR", "/tmp")) / f"warden-test-control-{os.getpid()}.db"
+
+
+class Switch:
+    """Flips the kill switch the way the console does, straight in the control plane's store."""
+    def __init__(self, db: Path):
+        self.db = db
+
+    def _sql(self, sql, *args):
+        import sqlite3
+        c = sqlite3.connect(self.db, isolation_level=None)
+        c.execute(sql, args)
+        c.close()
+
+    def trip(self, scope="global", target="*", reason="test stop"):
+        self._sql("INSERT OR IGNORE INTO switches VALUES (?, ?, ?, 'tester', datetime('now'))", scope, target, reason)
+
+    def reset(self):
+        self._sql("DELETE FROM switches")
+
+
+@pytest.fixture()
+def switch(control_url):
+    s = Switch(CONTROL_DB)
+    s.reset()
+    yield s
+    s.reset()
+
+
 @pytest.fixture(scope="session", autouse=True)
-def policy_url(ledger_url):
+def policy_url(ledger_url, control_url):
     # The real Cedar policy service, reading vendor history from the test ledger.
-    proc, url = serve(POLICY_DIR, POLICY_PORT, {"LEDGER_URL": ledger_url, "POLICY_DIR": str(ROOT / "policies")})
+    proc, url = serve(POLICY_DIR, POLICY_PORT, {"LEDGER_URL": ledger_url, "POLICY_DIR": str(ROOT / "policies"),
+                                                "CONTROL_URL": control_url})
     yield url
     proc.terminate()
 

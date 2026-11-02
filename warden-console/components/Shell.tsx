@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { Nav } from "./Nav";
 import { type Me, MeContext } from "@/lib/me";
 import { useLive } from "@/lib/useLive";
-import type { RunRow } from "@/lib/types";
+import type { ControlStatus, RunRow } from "@/lib/types";
+import { clock } from "@/lib/format";
+import Link from "next/link";
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
@@ -25,10 +27,26 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
 function SignedIn({ me, children }: { me: Me; children: React.ReactNode }) {
   const { data } = useLive<RunRow[]>("/api/backend/runs?status=pending_human", 4000);
+  const { data: control } = useLive<ControlStatus>("/api/control/status", 4000);
   return (
     <div className="shell">
       <Nav pending={data?.length} me={me} />
-      <main className="page">{children}</main>
+      <main className="page">
+        {control?.global_stop && control.global && (
+          <div className="kill-banner" role="alert">
+            <strong>Payments are stopped.</strong> {control.global.reason} (by {control.global.by},
+            since {clock(control.global.since)}). No money moves until a controller resumes payments.{" "}
+            <Link href="/governance#kill-switch">Kill switch</Link>
+          </div>
+        )}
+        {control && control.paused_agents.length > 0 && (
+          <div className="kill-banner kill-banner-agent" role="status">
+            Paused by the kill switch: {control.paused_agents.join(", ")}. Runs that need {control.paused_agents.length > 1 ? "them" : "it"} wait.{" "}
+            <Link href="/governance#kill-switch">Kill switch</Link>
+          </div>
+        )}
+        {children}
+      </main>
     </div>
   );
 }

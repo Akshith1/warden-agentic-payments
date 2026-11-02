@@ -7,6 +7,7 @@ import time
 from .. import llm
 from ..prompt_registry import LoadedPrompt, bundled
 from ..capability import GuardedLedger
+from ..control_client import ControlClient
 from ..ledger_client import LedgerClient
 from ..ocr_client import OcrClient
 from ..policy_client import PolicyClient
@@ -34,6 +35,7 @@ class Deps:
     extraction_prompt: LoadedPrompt = field(default_factory=bundled)
     policy: PolicyClient = field(default_factory=PolicyClient)
     ocr: OcrClient = field(default_factory=OcrClient)
+    control: ControlClient = field(default_factory=ControlClient)
 
     def ledger_for(self, agent: str) -> GuardedLedger:
         """The ledger as `agent` may use it, per its capability manifest."""

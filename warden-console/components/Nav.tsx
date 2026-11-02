@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/submit", label: "Submit invoice" },
   { href: "/ledger", label: "Ledger" },
   { href: "/governance", label: "Governance" },
+  { href: "/audit", label: "Audit log" },
 ];
 
 export function Nav({ pending, me }: { pending?: number; me?: Me }) {

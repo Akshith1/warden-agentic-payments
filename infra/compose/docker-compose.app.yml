@@ -9,6 +9,9 @@ networks:
     name: warden-ocr
     internal: true
 
+volumes:
+  control-data:
+
 services:
   warden-ledger:
     build: ./warden-ledger
@@ -26,14 +29,48 @@ services:
         limits:
           memory: 512m
 
+  # Phase 9: the kill switch and the hash-chained audit log. The volume is handed to the
+  # service's user first (the same lesson as Keycloak's volume in phase 6).
+  control-data-init:
+    image: alpine:3.22
+    command: ["chown", "-R", "10001:10001", "/data"]
+    volumes:
+      - control-data:/data
+    restart: "no"
+
+  warden-control:
+    build: ./warden-control
+    restart: unless-stopped
+    depends_on:
+      control-data-init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    environment:
+      CONTROL_DB: /data/control.db
+      KEYCLOAK_ISSUER: http://localhost:8180/realms/warden
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/warden/protocol/openid-connect/certs
+      CANARY_VENDORS: ${CANARY_VENDORS:-CANARY-DO-NOT-PAY}
+    volumes:
+      - control-data:/data
+    ports:
+      - "8103:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
   warden-policy:
     build: ./warden-policy
     restart: unless-stopped
     depends_on:
       warden-ledger:
         condition: service_healthy
+      warden-control:
+        condition: service_healthy
     environment:
       POLICY_DIR: /policies
+      CONTROL_URL: http://warden-control:8000
       LEDGER_URL: http://warden-ledger:8000
       # Read-only: the policy service looks up vendor history itself.
       VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
@@ -95,6 +132,7 @@ services:
       LEDGER_URL: http://warden-ledger:8000
       POLICY_URL: http://warden-policy:8000
       OCR_URL: http://warden-ocr:8000
+      CONTROL_URL: http://warden-control:8000
       KEYCLOAK_ISSUER: http://localhost:8180/realms/warden
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/warden/protocol/openid-connect/certs
       LEDGER_WRITE_KEY: ${LEDGER_WRITE_KEY:?set in .env}
@@ -123,6 +161,7 @@ services:
       LEDGER_URL: http://warden-ledger:8000
       # Browsers are sent to Keycloak at localhost:8180; this server exchanges codes and
       # fetches keys at keycloak:8080. Both must match infra/keycloak/realm-warden.json.
+      CONTROL_URL: http://warden-control:8000
       KEYCLOAK_PUBLIC_URL: http://localhost:8180
       KEYCLOAK_INTERNAL_URL: http://keycloak:8080
       CONSOLE_URL: http://localhost:3100

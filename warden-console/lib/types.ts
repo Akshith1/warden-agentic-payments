@@ -66,3 +66,17 @@ export type VendorCandidate = {
   last_remit_account: string | null;
   aliases: string[];
 };
+
+export type ControlStatus = {
+  global_stop: boolean;
+  global: { reason: string; by: string; since: string } | null;
+  paused_agents: string[];
+  switches: { scope: string; target: string; reason: string; by: string; since: string }[];
+};
+
+export type AuditEntry = {
+  seq: number; at: string; type: string; run_id: string | null; actor: string | null;
+  payload: Record<string, unknown>; prev_hash: string; hash: string;
+};
+
+export type ChainCheck = { valid: boolean; entries: number; head?: string; broken_at?: number; problem?: string };
