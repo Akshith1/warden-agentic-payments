@@ -70,6 +70,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `warden-control` | Kill switch and hash-chained audit log | http://localhost:8103/status |
 | `warden-quality` | Great Expectations checks on the ledger, vendor history and loaded data; read-only | (none: no published port) |
 | `catalogue` | Optional data catalogue (OpenMetadata), started with the `catalogue` profile | http://localhost:8585 |
+| `lgtm` | Grafana with Tempo, Prometheus and Loki behind an OpenTelemetry collector | http://localhost:3000 |
 | `litellm` | LLM gateway with the three routes; one key, route list and daily budget per agent | http://localhost:4000 |
 | `mlflow` | Prompt Registry and gate results | http://localhost:5500 |
 | `postgres` | One database and role per service, plus a read-only role for the data-quality checks | localhost:15432 |
@@ -255,6 +256,41 @@ Stop it, keeping its data, with `.\infra\scripts\compose.ps1 --profile catalogue
 Compared with OpenMetadata's own Compose file: its database is in Warden's Postgres instead of a second one; there is no Airflow (ingestion is the one-shot job); its signing keys, first admin password and encryption key are generated for this install instead of the defaults every install shares; self sign-up is off; and only the web UI is published, on 127.0.0.1.
 
 The admin password is set only when the catalogue's database is first created. To start the catalogue over: `.\infra\scripts\compose.ps1 --profile catalogue down`, then `.\infra\scripts\compose.ps1 exec postgres psql -U postgres -c "DROP DATABASE openmetadata"` and `docker volume rm warden_catalogue-search-data`, then the steps above from the init script.
+
+## Observability (phase 9b)
+
+Every run is traced, measured and logged with [OpenTelemetry](https://opentelemetry.io/), and shown in Grafana at http://localhost:3000 (user `admin`, password `GRAFANA_ADMIN_PASSWORD` from `.env`). One container, [`grafana/otel-lgtm`](https://github.com/grafana/docker-otel-lgtm), runs the collector, Tempo (traces), Prometheus (metrics), Loki (logs) and Grafana.
+
+| Signal | What it shows | Where it comes from |
+| --- | --- | --- |
+| **Traces** | One per stretch of a run (submit to the pause for a person; resume to the end). Every step, model call and service call in order, with timings: the backend, policy, ledger, control plane and data-quality services join the same trace. | The backend's own spans (`app/telemetry.py`); the other services through `opentelemetry-instrument` |
+| **Metrics** | Runs by outcome, step and model-call latency, tokens per agent, risk-score distribution, escalations by kind, policy decisions, HTTP latency per service | Prometheus, through the collector |
+| **Step log** | Each trail entry the agents write, as one JSON line: risk scores, decisions, confidence, policy results | Loki |
+
+The **Warden** dashboard opens as Grafana's home page. Its panels answer four questions: how runs ended and why invoices went to a person; where the time goes; whether the agents are consistent; and the recent runs, with their traces and step log.
+
+**What leaves the backend** is what the audit log already holds: run ids, vendor names, amounts, scores and decisions. No invoice text, no prompts, no model answers, and no approver's note; a test runs a masked invoice through the graph and checks none of it reaches telemetry. `warden-pii` and `warden-ocr` are not instrumented: they stay on their internal networks, and the backend's spans time every call to them.
+
+### Are the agents consistent?
+
+The phase 7 live run scored two near-identical Kestrel invoices 0.60 and 0.15. To tell the model's variation from the invoice's, ask the risk and approval agents the same question again, with exactly the evidence a run sent them:
+
+```powershell
+.\infra\scripts\compose.ps1 exec warden-backend python -m app.consistency <run id> --times 5
+```
+
+The run id is the end of the run page's address. Nothing is paid and no run changes; each question is a real model call on that agent's gateway key (about 2,000 tokens). The result prints, and shows on the dashboard under **Consistency checks**: a risk spread above 0.2 on identical evidence means the model, not the invoice, is moving.
+
+### Try it
+
+After pulling this phase:
+
+```powershell
+python infra/scripts/fill-secrets.py          # adds GRAFANA_ADMIN_PASSWORD
+.\infra\scripts\compose.ps1 up -d --build
+```
+
+Submit an invoice, then open Grafana. Metrics arrive every 15 seconds.
 
 ## Model access per agent (phase 8)
 
@@ -582,7 +618,7 @@ These are deliberate and each one is removed by a named later phase.
 | 7b | Data-quality checks with Great Expectations; critical failures stop payments. Optional data catalogue (OpenMetadata) with personal-data tags and lineage (done) | 22 |
 | 8 | Per-agent gateway keys, route allowlists, daily token budgets, spend per agent (done) | 12 |
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
-| 9b | OpenTelemetry, Langfuse, Grafana | 24-27 |
+| 9b | OpenTelemetry traces, metrics and step logs in Grafana; agent consistency check (done). Langfuse | 24-27 |
 | 10 | GitHub Actions: policies, every test suite, console build, Compose and secret checks (done) | CI |
 | 11 | Azure profile (Container Apps, Entra ID, Key Vault, APIM, Blob WORM) | 28-31 |
 
