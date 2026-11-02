@@ -11,6 +11,10 @@ export function useLive<T>(url: string, intervalMs = 1500, active = true) {
   const load = useCallback(async () => {
     try {
       const res = await fetch(url, { cache: "no-store" });
+      if (res.status === 401) {  // the sign-in ended (Keycloak session timed out): sign in again, then come back
+        window.location.href = `/api/auth/login?next=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
       const body = await res.json();
       if (!res.ok) throw new Error(body?.detail ?? `HTTP ${res.status}`);
       setData(body as T);

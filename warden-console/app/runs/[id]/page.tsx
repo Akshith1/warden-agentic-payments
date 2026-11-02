@@ -5,11 +5,13 @@ import { Status } from "@/components/Status";
 import { clock, money, plainReason, seconds } from "@/lib/format";
 import { FINISHED, STEP_LABEL, statusOf } from "@/lib/status";
 import type { RunDetail, TrailEntry, VendorCandidate } from "@/lib/types";
+import { can, useMe } from "@/lib/me";
 import { post, useLive } from "@/lib/useLive";
 
 export default function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data, error, reload } = useLive<RunDetail>(`/api/backend/runs/${id}`, 1500);
+  const me = useMe();
 
   if (error && !data) return <p className="notice notice-error">{error}</p>;
   if (!data) return <p className="muted">Loading run…</p>;
@@ -85,7 +87,10 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
             {ext && <div><dt>Read with confidence</dt><dd>{Math.round(ext.extraction_confidence * 100)}%</dd></div>}
           </dl>
 
-          {status === "pending_human" && (
+          {status === "pending_human" && !can(me, "approver", "controller") && (
+            <p className="notice">Waiting for a person with the approver or controller role. You can see it but not decide it.</p>
+          )}
+          {status === "pending_human" && can(me, "approver", "controller") && (
             <Decide id={id} reasons={state.escalation_reasons ?? []} onDone={reload}
               firstSeen={state.vendor?.known === false ? (ext?.vendor_name ?? null) : null}
               invoiceRemit={ext?.remit_to_account ?? null} />
@@ -149,7 +154,7 @@ function Step({ entry, previous }: { entry: TrailEntry; previous?: TrailEntry })
       detail = e.agrees ? "Agreed" : `Objected: ${(e.concerns as string[]).join("; ")}`;
       break;
     case "human_review":
-      detail = `${e.decision === "approve" ? "Approved" : "Rejected"} by ${e.approver}${e.note ? `: ${e.note}` : ""}${
+      detail = `${e.decision === "approve" ? "Approved" : "Rejected"} by ${e.approver_name ?? e.approver}${e.note ? `: ${e.note}` : ""}${
         e.linked_to ? `. Confirmed as ${e.linked_to}, which has ${e.linked_payment_count} earlier payment(s)` : ""}`;
       break;
     case "policy": {
@@ -184,7 +189,7 @@ function Step({ entry, previous }: { entry: TrailEntry; previous?: TrailEntry })
 function Decide({ id, reasons, onDone, firstSeen, invoiceRemit }: {
   id: string; reasons: string[]; onDone: () => void; firstSeen: string | null; invoiceRemit: string | null;
 }) {
-  const [approver, setApprover] = useState("");
+  const me = useMe();
   const [note, setNote] = useState("");
   const [sameAs, setSameAs] = useState<VendorCandidate | null>(null);
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
@@ -195,7 +200,7 @@ function Decide({ id, reasons, onDone, firstSeen, invoiceRemit }: {
     setError(null);
     try {
       await post(`/api/backend/runs/${id}/resume`, {
-        decision, approver: approver.trim(), note,
+        decision, note,
         ...(decision === "approve" && sameAs ? { same_vendor_id: sameAs.vendor_id } : {}),
       });
       onDone();
@@ -212,28 +217,23 @@ function Decide({ id, reasons, onDone, firstSeen, invoiceRemit }: {
       <ul>{reasons.map((r) => <li key={r}>{r}</li>)}</ul>
       {firstSeen && <SameVendor name={firstSeen} invoiceRemit={invoiceRemit} chosen={sameAs} onChoose={setSameAs} />}
       <label>
-        Your name
-        <input value={approver} onChange={(e) => setApprover(e.target.value)} autoComplete="name" required />
-      </label>
-      <label>
         <span>Note <span className="muted">(optional)</span></span>
         <input value={note} onChange={(e) => setNote(e.target.value)} />
       </label>
       {error && <p className="notice notice-error">{error}</p>}
       <div className="actions">
-        <button type="button" className="button button-pay" disabled={!approver.trim() || busy !== null}
+        <button type="button" className="button button-pay" disabled={busy !== null}
           onClick={() => decide("approve")}>
           {busy === "approve" ? "Approving…" : sameAs ? "Approve and link vendor" : "Approve payment"}
         </button>
-        <button type="button" className="button button-quiet" disabled={!approver.trim() || busy !== null}
+        <button type="button" className="button button-quiet" disabled={busy !== null}
           onClick={() => decide("reject")}>
           {busy === "reject" ? "Rejecting…" : "Reject"}
         </button>
       </div>
       <p className="muted small">
-        Approving starts the dry run and the settlement hold.{" "}
-        {sameAs ? "Your name is recorded as the person who confirmed the vendor link. " : ""}
-        Phase 6 takes your name from your login.
+        You are deciding as <strong>{me.name}</strong> ({me.username}). Approving starts the policy check, the dry
+        run and the settlement hold.{sameAs ? " You are also recorded as the person who confirmed the vendor link." : ""}
       </p>
     </form>
   );

@@ -14,20 +14,31 @@ permit (
     resource is Warden::Payment
 );
 
-// Any person may approve for now. Phase 6 (Keycloak) adds approval tiers,
-// such as a controller for amounts above a second limit.
-@id("people-may-approve")
-@summary("A person may approve any payment the agents could not")
+// People approve by role, from their Keycloak login (phase 6). The backend
+// verifies the token and passes the roles; it can't add roles of its own.
+@id("approvers-may-approve")
+@summary("A person with the approver role may approve up to 50,000.00")
 permit (
     principal is Warden::User,
     action == Warden::Action::"ApprovePayment",
     resource is Warden::Payment
-);
+)
+when { principal.roles.contains("approver") && resource.amountCents <= 5000000 };
 
-@id("people-may-link-vendors")
-@summary("A person may confirm that two vendor names are the same business")
+@id("controllers-may-approve-any-amount")
+@summary("A person with the controller role may approve any amount")
+permit (
+    principal is Warden::User,
+    action == Warden::Action::"ApprovePayment",
+    resource is Warden::Payment
+)
+when { principal.roles.contains("controller") };
+
+@id("approvers-may-link-vendors")
+@summary("A person with the approver role may confirm that two vendor names are the same business")
 permit (
     principal is Warden::User,
     action == Warden::Action::"ConfirmVendorAlias",
     resource is Warden::Vendor
-);
+)
+when { principal.roles.contains("approver") };
