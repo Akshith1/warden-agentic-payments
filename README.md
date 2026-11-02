@@ -1,5 +1,7 @@
 # Warden
 
+[![checks](https://github.com/Akshith1/warden-agentic-payments/actions/workflows/ci.yml/badge.svg)](https://github.com/Akshith1/warden-agentic-payments/actions/workflows/ci.yml)
+
 **Governed agentic payments.** A team of AI agents reads invoices, scores them for fraud, decides whether they are safe to pay, and pays the safe ones through a real double-entry ledger, while governance layers decide what each agent is allowed to do and keep a record of every decision.
 
 This repository is being built in phases (see [Roadmap](#roadmap)):
@@ -425,6 +427,22 @@ cd warden-backend && pip install -r requirements.txt -r requirements-dev.txt && 
 
 They cover the happy path, first-seen vendors, human approve and reject, the $5,000 threshold and its route switch, low confidence, critic disagreement, a changed remit-to account, duplicate invoices, insufficient funds, missing totals, line items that don't add up, and the API's double-resume guard. Phase 2 adds the history and currency rules, the `settling` status, retrying a failed run without repeating finished steps, the gate's scoring rules, and the gate end to end against a real MLflow server (set `MLFLOW_TRACKING_URI` to include those; they are skipped otherwise). Phase 3.5 adds vendor aliases: a linked name shares the vendor's history, the same invoice under either name is a duplicate, search links nothing, and conflicting or out-of-place links are refused. Phase 8 adds spend per agent against its budget and each agent calling with its own key; the gateway hooks were tested against a running LiteLLM 1.106.5 with mock models (route refused, budget refused, paused agent refused, spend recorded). Phase 9a adds the chain catching an edited and a deleted entry, the tamper script, both automatic triggers, roles on stop and resume, the kill switch overriding every Cedar rule, a payment stopped during its hold and paid on retry, a paused agent while people can still decide, and every step of a twice-stopped run recorded once and in order. Phase 6 adds token checks with real signed tokens (good, wrong key, wrong issuer, wrong audience, expired), roles on every endpoint, approval tiers, and four eyes in both the API and the graph. Phase 5 adds the guardrail's rules against injected and ordinary receipt text, blocked runs that no agent ever reads, the safety model catching a rewording, failing closed when the guardrail is down, scanned invoices through OCR, and (in `warden-ocr`) real Tesseract under a real Landlock jail. Phase 4 adds the policy set and its validator (including both bad changes from scenario 07), the burst-proof 24-hour limit, Cedar catching a rule the code got wrong, a person refused by policy, no payment without the policy service, and the capability manifests.
 
+## Checks on every push (phase 10)
+
+GitHub Actions runs `.github/workflows/ci.yml` on every push to every branch, so each pull request shows a green tick or a red cross for its latest commit:
+
+| Job | What it runs |
+| --- | --- |
+| Cedar policies | The validator on `policies/` (scenario 06) and the policy service tests, including both bad changes being rejected (scenario 07) |
+| Ledger, OCR sandbox and control plane | Real Postgres 17 with the same database script Compose uses; the ledger tests; the OCR tests with real Tesseract and, where the runner's kernel has it, real Landlock; the kill switch, audit chain and spend tests |
+| Agents, graph and API | The backend suite, which starts real ledger, policy and control processes; only the model is a test double |
+| Console | `npm ci`, the TypeScript check and the production build |
+| Compose files and secrets | The whole stack's Compose configuration, every published port bound to 127.0.0.1, no secrets in `.env.example`, no `.env` committed |
+
+Nothing in CI calls a real model or needs an API key. The evaluation gate, which does, stays a job you run on purpose (phase 2).
+
+To make GitHub refuse a merge while checks are red: **Settings**, then **Branches**, then **Add branch ruleset** (or **Add rule**) for `main`, then **Require status checks to pass**, and pick the five checks.
+
 ## Known simplifications
 
 These are deliberate and each one is removed by a named later phase.
@@ -458,7 +476,7 @@ These are deliberate and each one is removed by a named later phase.
 | 8 | Per-agent gateway keys, route allowlists, daily token budgets, spend per agent (done) | 12 |
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry, Langfuse, Grafana | 24-27 |
-| 10 | GitHub Actions: policy validation, data-quality self-test, eval gate | CI |
+| 10 | GitHub Actions: policies, every test suite, console build, Compose and secret checks (done) | CI |
 | 11 | Azure profile (Container Apps, Entra ID, Key Vault, APIM, Blob WORM) | 28-31 |
 
 ## Data sources
