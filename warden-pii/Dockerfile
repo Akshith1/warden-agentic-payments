@@ -3,10 +3,6 @@ WORKDIR /srv
 RUN useradd --create-home --uid 10001 app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# Presidio's email check uses tldextract's list of internet domains. Fetch it now, at build
-# time, so the running service never needs the internet (it has no route to it).
-ENV TLDEXTRACT_CACHE=/opt/tldextract
-RUN python -c "import tldextract; tldextract.extract('warden.example.com')" && chmod -R a+rX /opt/tldextract
 COPY app ./app
 USER app
 EXPOSE 8000
