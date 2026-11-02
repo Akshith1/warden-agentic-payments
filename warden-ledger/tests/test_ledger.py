@@ -168,3 +168,14 @@ def test_search_lists_candidates_but_links_nothing(client):
     assert client.get("/vendors/search", params={"q": "**"}, headers=R).json() == []
     lookup = client.get("/vendors/lookup", params={"name": "TAN CHAY YEE OJC MARKETING SDN BHD"}, headers=R)
     assert lookup.json()["known"] is False  # searching created no link
+
+
+def test_recent_payments_count_only_todays(client):
+    from datetime import date
+    record(client, "ACME", "old", amount="10.00")  # dated 2026-01-01
+    today = date.today().isoformat()
+    for i in range(2):
+        client.post("/vendors/record-payment", headers=W, json={
+            "vendor_name": "ACME", "amount": "10.00", "paid_on": today, "external_ref": f"new-{i}"})
+    found = client.get("/vendors/lookup", params={"name": "ACME"}, headers=R).json()
+    assert found["payment_count"] == 3 and found["payments_last_24h"] == 2

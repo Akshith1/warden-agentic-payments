@@ -12,3 +12,4 @@ node_modules/
 mlruns/
 tsconfig.tsbuildinfo
 next-env.d.ts
+.scratch/

@@ -1,0 +1,9 @@
+{
+  "agent": "payment-execution",
+  "purpose": "The only role that writes to the ledger.",
+  "allowed_actions": [
+    "DryRunLedgerEntry",
+    "CreateLedgerEntry",
+    "RecordVendorPayment"
+  ]
+}

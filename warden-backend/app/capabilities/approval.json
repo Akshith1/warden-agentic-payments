@@ -1,0 +1,5 @@
+{
+  "agent": "approval",
+  "purpose": "Decides only; the decision is checked by the policy service before anything moves.",
+  "allowed_actions": []
+}

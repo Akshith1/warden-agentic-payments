@@ -11,6 +11,9 @@ LEDGER_URL = os.environ.get("LEDGER_URL", "http://warden-ledger:8000")
 LEDGER_WRITE_KEY = os.environ.get("LEDGER_WRITE_KEY", "")
 VENDOR_LOOKUP_KEY = os.environ.get("VENDOR_LOOKUP_KEY", "")
 
+# Phase 4: Cedar policy decision point. Every approval and ledger write is checked there too.
+POLICY_URL = os.environ.get("POLICY_URL", "http://warden-policy:8000")
+
 ROUTINE_AMOUNT_THRESHOLD = float(os.environ.get("ROUTINE_AMOUNT_THRESHOLD", "5000"))
 CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.75"))
 LINE_ITEM_TOLERANCE = float(os.environ.get("LINE_ITEM_TOLERANCE", "0.01"))

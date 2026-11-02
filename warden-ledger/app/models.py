@@ -42,6 +42,7 @@ class VendorLookup(BaseModel):
     average_amount: Decimal | None = None
     recent_amounts: list[Decimal] = []
     last_remit_account: str | None = None
+    payments_last_24h: int = 0  # settled payments recorded in the last 24 hours (phase 4 rate limit)
 
 
 class VendorCandidate(BaseModel):
