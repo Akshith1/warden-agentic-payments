@@ -185,6 +185,8 @@ services:
       LITELLM_URL: http://litellm:4000
       # Phase 9b: per-agent sampling temperature, e.g. risk-scoring=0. Empty: provider defaults.
       AGENT_TEMPERATURES: ${AGENT_TEMPERATURES:-}
+      # Phase 9b: asks of the approval agent that must all say auto_approve (1 turns this off).
+      APPROVAL_SAMPLES: ${APPROVAL_SAMPLES:-3}
       # Phase 8: each agent calls with its own key from the agent-keys volume; no master key here.
       AGENT_KEYS_FILE: /run/agent-keys/agent-keys.json
       LEDGER_URL: http://warden-ledger:8000

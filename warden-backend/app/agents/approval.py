@@ -27,11 +27,33 @@ def decide(deps: Deps, ext: dict, vendor: dict, risk: dict, pii_mapping: dict) -
     return deps.llm("approval", config.ROUTE_REASONING, prompt("approval"), evidence, ApprovalDecision)
 
 
+def approve(deps: Deps, ext: dict, vendor: dict, risk: dict, pii_mapping: dict) -> tuple[ApprovalDecision,
+                                                                                     list[ApprovalDecision]]:
+    """The approval agent's answer as Warden acts on it (phase 9b). Escalate and reject stand on the
+    first answer. An auto_approve stands only if every one of APPROVAL_SAMPLES asks says so; any
+    other answer sends the invoice to a person, and the lowest confidence is the one checked."""
+    first = decide(deps, ext, vendor, risk, pii_mapping)
+    samples = [first]
+    if first.decision != "auto_approve":
+        return first, samples
+    while len(samples) < config.APPROVAL_SAMPLES and samples[-1].decision == "auto_approve":
+        samples.append(decide(deps, ext, vendor, risk, pii_mapping))
+    lowest = min(s.confidence for s in samples)
+    agreed = sum(s.decision == "auto_approve" for s in samples)
+    if agreed == len(samples):
+        return ApprovalDecision(decision="auto_approve", confidence=lowest, reasons=first.reasons), samples
+    dissent = next(s for s in samples if s.decision != "auto_approve")
+    return ApprovalDecision(decision="escalate", confidence=lowest, reasons=[
+        f"not unanimous: {agreed} of {len(samples)} asks said auto_approve, then one said {dissent.decision}",
+        *dissent.reasons]), samples
+
+
 def run(state: RunState, deps: Deps) -> dict:
     ext = state["extraction"]
-    decision = decide(deps, ext, state["vendor"], state["risk"], state.get("pii_mapping") or {})
+    decision, samples = approve(deps, ext, state["vendor"], state["risk"], state.get("pii_mapping") or {})
 
-    trail = audit("approval", decision=decision.decision, confidence=decision.confidence)
+    trail = audit("approval", decision=decision.decision, confidence=decision.confidence, asks=len(samples),
+                  answers=[s.decision for s in samples])
     if decision.decision == "reject":
         return {"approval": decision.model_dump(), "status": "rejected",
                 "status_reason": "; ".join(decision.reasons), "audit_trail": trail}

@@ -163,6 +163,13 @@ function Step({ entry, previous }: { entry: TrailEntry; previous?: TrailEntry })
       break;
     case "approval":
       detail = `${String(e.decision).replace("_", " ")}, ${Math.round(Number(e.confidence) * 100)}% sure`;
+      // Phase 9b: an auto-approval must be unanimous across several asks.
+      if (Array.isArray(e.answers) && e.answers.length > 1) {
+        const agreed = (e.answers as string[]).filter((a) => a === "auto_approve").length;
+        detail += agreed === e.answers.length
+          ? ` (asked ${e.answers.length} times; all agreed, lowest confidence shown)`
+          : ` (asked ${e.answers.length} times; ${agreed} said auto approve, so a person decides)`;
+      }
       break;
     case "critic":
       detail = e.agrees ? "Agreed" : `Objected: ${(e.concerns as string[]).join("; ")}`;

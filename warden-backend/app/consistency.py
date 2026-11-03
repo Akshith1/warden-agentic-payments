@@ -19,7 +19,7 @@ import sys
 
 from . import config, telemetry
 from .agents import Deps
-from .agents.approval import decide
+from .agents.approval import approve
 from .agents.risk_scoring import assess
 
 
@@ -31,7 +31,11 @@ def measure(deps: Deps, values: dict, times: int) -> dict:
     risks = [assess(deps, ext, vendor, mapping)[1] for _ in range(times)]
     # Approval is asked with the run's own risk assessment, so only approval's variation shows.
     original_risk = values.get("risk") or risks[0].model_dump()
-    decisions = [decide(deps, ext, vendor, original_risk, mapping) for _ in range(times)]
+    # Each repeat is decided the way a run decides (phase 9b: an auto-approval must be unanimous
+    # across APPROVAL_SAMPLES asks); every raw answer is kept too.
+    asked = [approve(deps, ext, vendor, original_risk, mapping) for _ in range(times)]
+    decisions = [final for final, _ in asked]
+    answers = [[s.decision for s in samples] for _, samples in asked]
 
     scores = [r.risk_score for r in risks]
     confidences = [d.confidence for d in decisions]
@@ -45,6 +49,9 @@ def measure(deps: Deps, values: dict, times: int) -> dict:
                  "stdev": round(statistics.pstdev(scores), 4), "mean": round(statistics.fmean(scores), 4)},
         "approval": {"original": (values.get("approval") or {}).get("decision"),
                      "decisions": [d.decision for d in decisions], "confidences": confidences,
+                     "answers": answers, "asks": sum(len(a) for a in answers),
+                     "raw_auto_approve": sum(a.count("auto_approve") for a in answers),
+                     "samples_needed": config.APPROVAL_SAMPLES,
                      "spread": round(max(confidences) - min(confidences), 4),
                      "agree": len({d.decision for d in decisions}) == 1},
     }
@@ -70,6 +77,9 @@ def describe(report: dict) -> str:
         f"{', '.join(f'{c:.2f}' for c in approval['confidences'])}. The run itself: "
         + (f"{approval['original']}." if approval["original"]
            else "not asked (the run went to a person straight after the risk step)."),
+        f"  Rule: an auto-approval needs {approval['samples_needed']} of {approval['samples_needed']} asks to agree. "
+        f"The model was asked {approval['asks']} times in all; {approval['raw_auto_approve']} answers said "
+        f"auto_approve.",
         "  The decisions " + ("all agree." if approval["agree"] else "DIFFER between identical questions."),
     ]
     level_changes = len(set(risk["levels"])) > 1
