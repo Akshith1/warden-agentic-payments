@@ -2,9 +2,10 @@
 
 Two modes, chosen with LEDGER_AUTH:
 
-* keys (the default until SPIRE runs on a machine): a shared API key per
-  scope, sent as X-API-Key. Anyone holding the write key can move money.
-* spiffe (phase 6b): callers send a JWT-SVID, a short-lived token SPIRE signs
+* keys (the code's default, kept for local tests): a shared API key per
+  scope, sent as X-API-Key. Compose no longer configures a write key, so in
+  Compose this mode accepts no writes at all.
+* spiffe (phase 6b, Compose's default): callers send a JWT-SVID, a short-lived token SPIRE signs
   for a workload after checking which container is asking. The ledger asks
   its own SPIRE agent to validate it, then allows the scope only to the
   SPIFFE IDs listed for it. Writes take no key at all: a leaked write key
