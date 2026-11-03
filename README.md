@@ -337,32 +337,31 @@ Until phase 6b, anything holding `LEDGER_WRITE_KEY` from `.env` could move money
 | `spire-bootstrap` | A one-shot job on every start: the server's CA bundle for the agent, a one-hour join token, and the server's identity entries brought in line with `identities.json`. |
 | `spire-agent` | Answers on a socket the backend, policy and ledger containers mount read-only. When a container asks, the agent finds the caller's container from its process and reads its Compose labels from the Docker API; only `warden-backend` gets `spiffe://warden.local/backend`. |
 
-With `LEDGER_AUTH=spiffe` in `.env`, the backend and the policy service send the ledger a JWT-SVID: a token SPIRE signed for that container, valid for five minutes and renewed a minute before it expires. The ledger asks its own agent to check it, then allows writes only to `spiffe://warden.local/backend` and reads to the backend and the policy service. The write key is refused even by someone who has it. The console still reads with `VENDOR_LOOKUP_KEY`: its Node server has no maintained SPIFFE library, so it is the one key left.
+The backend and the policy service send the ledger a JWT-SVID: a token SPIRE signed for that container, valid for five minutes and renewed a minute before it expires. The ledger asks its own agent to check it, then allows writes only to `spiffe://warden.local/backend` and reads to the backend and the policy service. **There is no ledger write key**: it was removed once the live run proved identities worked (see [the phase 6b live run](docs/live-runs/2026-11-phase-6b.md)), so there is nothing in `.env` that can move money. The console still reads with `VENDOR_LOOKUP_KEY`: its Node server has no maintained SPIFFE library, so it is the one ledger key left, and it is read-only.
 
-The default is `LEDGER_AUTH=keys`, so SPIRE runs beside the stack without changing anything until it is proven on a machine. No service waits for SPIRE to start.
+The backend, policy and ledger wait for the SPIRE agent to be healthy before they start. `LEDGER_AUTH=keys` still exists in the code for local tests; in Compose it accepts no writes at all, because no write key is configured.
 
 ### Try it
 
 ```powershell
-python infra/scripts/fill-secrets.py      # adds LEDGER_AUTH=keys
-.\infra\scripts\compose.ps1 up -d --build
 .\infra\scripts\compose.ps1 ps spire-server spire-agent
 .\infra\scripts\compose.ps1 logs spire-bootstrap
+.\infra\scripts\compose.ps1 exec warden-backend python -c "from spiffe import WorkloadApiClient; s=WorkloadApiClient().fetch_jwt_svid(audience={'warden-ledger'}); print(s.spiffe_id)"
 ```
 
-Both should be healthy, and the bootstrap log should end with the three identities created. Then set `LEDGER_AUTH=spiffe` in `.env`, run `.\infra\scripts\compose.ps1 up -d warden-backend warden-policy warden-ledger`, and pay an invoice. To see the write key refused:
+Both should be healthy, the bootstrap log should list the three identities, and the backend should print `spiffe://warden.local/backend`. A request with any key, including the old write key, is refused:
 
 ```powershell
-.\infra\scripts\compose.ps1 exec warden-backend python -c "import httpx,os; r=httpx.post('http://warden-ledger:8000/transactions/dry-run', json={'idempotency_key':'x','description':'x','postings':[]}, headers={'X-API-Key': os.environ['LEDGER_WRITE_KEY']}); print(r.status_code, r.json())"
+.\infra\scripts\compose.ps1 exec warden-backend python -c "import httpx; r=httpx.post('http://warden-ledger:8000/transactions/dry-run', json={'idempotency_key':'x','description':'x','postings':[]}, headers={'X-API-Key': 'any-old-key'}); print(r.status_code, r.json())"
 ```
 
-It prints `401` and "the ledger takes writes from workload identities only". To go back, set `LEDGER_AUTH=keys` and run the same `up -d` command.
+It prints `401` and "the ledger takes writes from workload identities only".
 
 ## Rotating secrets
 
 `.env.example` once shipped with ready-made values for the local secrets, and they remain in this repository's history. If your `.env` was copied from it, replace them. Every published port now listens on `127.0.0.1` only, so nothing else on your network can reach these services.
 
-- **`LITELLM_MASTER_KEY`, `LEDGER_WRITE_KEY`, `VENDOR_LOOKUP_KEY`, `KEYCLOAK_ADMIN_PASSWORD`**: delete the value after `=` in `.env`, run `python infra/scripts/fill-secrets.py`, then `up -d`. (Keycloak's admin password only applies to a new Keycloak volume; change it in the admin console otherwise.)
+- **`LITELLM_MASTER_KEY`, `VENDOR_LOOKUP_KEY`, `KEYCLOAK_ADMIN_PASSWORD`**: delete the value after `=` in `.env`, run `python infra/scripts/fill-secrets.py`, then `up -d`. (Keycloak's admin password only applies to a new Keycloak volume; change it in the admin console otherwise.)
 - **Postgres passwords**: they're set when the database volume is first created. For an existing install, change each role first, then `.env`, for example `compose.ps1 exec postgres psql -U postgres -c "ALTER ROLE warden_ledger PASSWORD '<new>'"`, then `up -d`.
 
 ## Kill switch and audit log (phase 9a)
@@ -656,7 +655,7 @@ These are deliberate and each one is removed by a named later phase.
 | 4 | Cedar policies, 24-hour vendor limit, capability manifests (done) | 06, 07, 09, 10, 20 |
 | 5 | Guardrail (rules + safety model), sandboxed OCR with Landlock (done); confidence gate, dry run and hold were built in phases 1-2 | 08, 11, 16, 17, 18 |
 | 6 | Keycloak sign-in, approval roles and tiers, four eyes (done) | identity |
-| 6b | SPIRE workload identity: the ledger takes writes from a SPIRE-signed identity instead of a shared key (done). Infisical secrets vault | 02 |
+| 6b | SPIRE workload identity: the ledger takes writes only from the backend's SPIRE identity; the write key is gone (done). Infisical secrets vault | 02 |
 | 7 | Presidio masking before every model, data map (done) | 03 |
 | 7b | Data-quality checks with Great Expectations; critical failures stop payments. Optional data catalogue (OpenMetadata) with personal-data tags and lineage (done) | 22 |
 | 8 | Per-agent gateway keys, route allowlists, daily token budgets, spend per agent (done) | 12 |

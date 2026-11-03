@@ -23,7 +23,8 @@ services:
     environment:
       POSTGRES_HOST: postgres
       PGPASS_WARDEN_LEDGER: ${PGPASS_WARDEN_LEDGER:?set in .env}
-      LEDGER_WRITE_KEY: ${LEDGER_WRITE_KEY:?set in .env}
+      # Phase 6b: no write key. Writes need the backend's SPIRE identity; this key is checked only
+      # for the console's reads.
       VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
       OPENING_CASH: ${OPENING_CASH:-250000.00}
     ports:
@@ -78,8 +79,7 @@ services:
       POLICY_DIR: /policies
       CONTROL_URL: http://warden-control:8000
       LEDGER_URL: http://warden-ledger:8000
-      # Read-only: the policy service looks up vendor history itself.
-      VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
+      # Read-only: the policy service looks up vendor history itself, as spiffe://warden.local/policy.
     volumes:
       # Validated at startup; a rejected set stops the service (and with it, payments).
       - ./policies:/policies:ro
@@ -196,8 +196,7 @@ services:
       CONTROL_URL: http://warden-control:8000
       KEYCLOAK_ISSUER: http://localhost:8180/realms/warden
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/warden/protocol/openid-connect/certs
-      LEDGER_WRITE_KEY: ${LEDGER_WRITE_KEY:?set in .env}
-      VENDOR_LOOKUP_KEY: ${VENDOR_LOOKUP_KEY:?set in .env}
+      # Phase 6b: no ledger keys; every ledger call carries the backend's SPIRE identity.
       ROUTINE_AMOUNT_THRESHOLD: ${ROUTINE_AMOUNT_THRESHOLD:-5000}
       CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.75}
       SETTLEMENT_HOLD_SECONDS: ${SETTLEMENT_HOLD_SECONDS:-20}
