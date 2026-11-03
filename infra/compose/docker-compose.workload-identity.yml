@@ -3,9 +3,8 @@
 # agent that works out which container is calling its socket and hands it that container's
 # identity. The ledger then accepts a SPIRE-signed identity instead of a shared key.
 #
-# Nothing changes until LEDGER_AUTH=spiffe is set in .env: with the default (keys), SPIRE runs
-# beside the stack and the services keep using their API keys. No service waits for SPIRE to
-# start, so if it can't run on a machine the rest of Warden still does.
+# Since the phase 6b live run proved it, identities are the default (LEDGER_AUTH=spiffe) and there
+# is no ledger write key: the backend, policy and ledger wait for the agent to be healthy.
 networks:
   default:
     name: warden-net
@@ -20,7 +19,7 @@ volumes:
 
 x-identity: &identity
   SPIFFE_ENDPOINT_SOCKET: unix:///run/spire/sockets/agent.sock
-  LEDGER_AUTH: ${LEDGER_AUTH:-keys}
+  LEDGER_AUTH: ${LEDGER_AUTH:-spiffe}
 
 services:
   spire-server:
@@ -82,13 +81,22 @@ services:
   # The workloads that hold an identity: they reach the agent through its socket, read-only.
   warden-backend:
     environment: *identity
+    depends_on:
+      spire-agent:
+        condition: service_healthy
     volumes:
       - spire-agent-socket:/run/spire/sockets:ro
   warden-policy:
     environment: *identity
+    depends_on:
+      spire-agent:
+        condition: service_healthy
     volumes:
       - spire-agent-socket:/run/spire/sockets:ro
   warden-ledger:
     environment: *identity
+    depends_on:
+      spire-agent:
+        condition: service_healthy
     volumes:
       - spire-agent-socket:/run/spire/sockets:ro
