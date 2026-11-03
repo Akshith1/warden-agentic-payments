@@ -125,6 +125,22 @@ def test_escalation_reasons_are_grouped_into_kinds():
     assert telemetry.reason_kind("remit-to account differs from the vendor's last settled payment") == \
         "remit_changed"
     assert telemetry.reason_kind("something new") == "other"
+    assert telemetry.reason_kind("approval agent escalated: not unanimous: 2 of 3 asks said auto_approve") == \
+        "approval_not_unanimous"
+    assert telemetry.reason_kind("approval agent escalated: amount looks unusual") == "approval_agent"
+    assert telemetry.reason_kind("critic disagreed: total mismatch") == "critic"
+    assert telemetry.reason_kind("policy: the vendor already had 3 payments") == "policy"
+    assert telemetry.reason_kind("decision confidence 0.70 below 0.75") == "low_confidence"
+
+
+def test_reasons_raised_after_the_risk_step_are_counted(checkpointer, ledger):
+    # Live phase 9b: a run escalated by the approval agent showed "No data" for why.
+    seed_history(ledger, "Late Escalation Supply", [100, 120, 110])
+    run(checkpointer, ledger, FakeLLM(invoice(vendor="Late Escalation Supply", total=90.0), decision="escalate"))
+    kinds = {p.attributes["kind"]: p.value for p in points("warden.escalations")}
+    assert kinds.get("approval_agent", 0) >= 1
+    span = by_name("step pending_human")[-1]
+    assert "approval_agent" in span.attributes["warden.escalation_kinds"]
 
 
 class Collector(BaseHTTPRequestHandler):
