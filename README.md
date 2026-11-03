@@ -71,6 +71,7 @@ Agents never name a provider model. They call a route on the LiteLLM gateway, an
 | `warden-quality` | Great Expectations checks on the ledger, vendor history and loaded data; read-only | (none: no published port) |
 | `catalogue` | Optional data catalogue (OpenMetadata), started with the `catalogue` profile | http://localhost:8585 |
 | `lgtm` | Grafana with Tempo, Prometheus and Loki behind an OpenTelemetry collector | http://localhost:3000 |
+| `spire-server`, `spire-agent` | Workload identities (SPIFFE) for the backend, policy and ledger | (none: no published port) |
 | `litellm` | LLM gateway with the three routes; one key, route list and daily budget per agent | http://localhost:4000 |
 | `mlflow` | Prompt Registry and gate results | http://localhost:5500 |
 | `postgres` | One database and role per service, plus a read-only role for the data-quality checks | localhost:15432 |
@@ -325,6 +326,37 @@ Until phase 8 every agent called the LiteLLM gateway with its master key, so any
 The budget is checked before each call, so the call that crosses it is the last one allowed; the next is refused. Budgets are in tokens rather than dollars because token counts don't depend on a price table that changes; the cost is recorded alongside.
 
 Per-key budgets are also a built-in LiteLLM feature, but that needs its Prisma database client, whose engine download at build time adds a fragile step. The custom-auth hook gives the same enforcement point with the rules in this repository.
+
+## Workload identity (phase 6b)
+
+Until phase 6b, anything holding `LEDGER_WRITE_KEY` from `.env` could move money: the key is the same string in the backend's environment, the ledger's and the file on disk. [SPIRE](https://spiffe.io/docs/latest/spire-about/) replaces it with identities that can't be copied out of a file.
+
+| Part | What it does |
+| --- | --- |
+| `spire-server` | The authority for the trust domain `warden.local`. Signs identities only for the workloads listed in [`infra/spire/identities.json`](infra/spire/identities.json). |
+| `spire-bootstrap` | A one-shot job on every start: the server's CA bundle for the agent, a one-hour join token, and the server's identity entries brought in line with `identities.json`. |
+| `spire-agent` | Answers on a socket the backend, policy and ledger containers mount read-only. When a container asks, the agent finds the caller's container from its process and reads its Compose labels from the Docker API; only `warden-backend` gets `spiffe://warden.local/backend`. |
+
+With `LEDGER_AUTH=spiffe` in `.env`, the backend and the policy service send the ledger a JWT-SVID: a token SPIRE signed for that container, valid for five minutes and renewed a minute before it expires. The ledger asks its own agent to check it, then allows writes only to `spiffe://warden.local/backend` and reads to the backend and the policy service. The write key is refused even by someone who has it. The console still reads with `VENDOR_LOOKUP_KEY`: its Node server has no maintained SPIFFE library, so it is the one key left.
+
+The default is `LEDGER_AUTH=keys`, so SPIRE runs beside the stack without changing anything until it is proven on a machine. No service waits for SPIRE to start.
+
+### Try it
+
+```powershell
+python infra/scripts/fill-secrets.py      # adds LEDGER_AUTH=keys
+.\infra\scripts\compose.ps1 up -d --build
+.\infra\scripts\compose.ps1 ps spire-server spire-agent
+.\infra\scripts\compose.ps1 logs spire-bootstrap
+```
+
+Both should be healthy, and the bootstrap log should end with the three identities created. Then set `LEDGER_AUTH=spiffe` in `.env`, run `.\infra\scripts\compose.ps1 up -d warden-backend warden-policy warden-ledger`, and pay an invoice. To see the write key refused:
+
+```powershell
+.\infra\scripts\compose.ps1 exec warden-backend python -c "import httpx,os; r=httpx.post('http://warden-ledger:8000/transactions/dry-run', json={'idempotency_key':'x','description':'x','postings':[]}, headers={'X-API-Key': os.environ['LEDGER_WRITE_KEY']}); print(r.status_code, r.json())"
+```
+
+It prints `401` and "the ledger takes writes from workload identities only". To go back, set `LEDGER_AUTH=keys` and run the same `up -d` command.
 
 ## Rotating secrets
 
@@ -624,7 +656,7 @@ These are deliberate and each one is removed by a named later phase.
 | 4 | Cedar policies, 24-hour vendor limit, capability manifests (done) | 06, 07, 09, 10, 20 |
 | 5 | Guardrail (rules + safety model), sandboxed OCR with Landlock (done); confidence gate, dry run and hold were built in phases 1-2 | 08, 11, 16, 17, 18 |
 | 6 | Keycloak sign-in, approval roles and tiers, four eyes (done) | identity |
-| 6b | Infisical secrets vault, SPIRE workload identity | 02 |
+| 6b | SPIRE workload identity: the ledger takes writes from a SPIRE-signed identity instead of a shared key (done). Infisical secrets vault | 02 |
 | 7 | Presidio masking before every model, data map (done) | 03 |
 | 7b | Data-quality checks with Great Expectations; critical failures stop payments. Optional data catalogue (OpenMetadata) with personal-data tags and lineage (done) | 22 |
 | 8 | Per-agent gateway keys, route allowlists, daily token budgets, spend per agent (done) | 12 |
