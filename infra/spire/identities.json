@@ -1,0 +1,13 @@
+{
+  "_comment": "Phase 6b: which container gets which identity. A container proves it is a service by its Compose labels (project and service), which the SPIRE agent reads from the Docker API. The ledger decides what each identity may do (LEDGER_WRITERS, LEDGER_READERS).",
+  "trust_domain": "warden.local",
+  "agent_id": "spiffe://warden.local/agent/compose",
+  "identities": [
+    {"entry_id": "warden-backend", "spiffe_id": "spiffe://warden.local/backend",
+     "selectors": ["docker:label:com.docker.compose.project:warden", "docker:label:com.docker.compose.service:warden-backend"]},
+    {"entry_id": "warden-policy", "spiffe_id": "spiffe://warden.local/policy",
+     "selectors": ["docker:label:com.docker.compose.project:warden", "docker:label:com.docker.compose.service:warden-policy"]},
+    {"entry_id": "warden-ledger", "spiffe_id": "spiffe://warden.local/ledger",
+     "selectors": ["docker:label:com.docker.compose.project:warden", "docker:label:com.docker.compose.service:warden-ledger"]}
+  ]
+}
