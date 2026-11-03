@@ -51,8 +51,12 @@ SPREAD = meter.create_gauge("warden.consistency.spread",
                             description="Highest minus lowest value over repeated scoring of one invoice")
 
 # Escalation reasons are sentences; group them into a few kinds for a label.
+# First match wins, so the more specific phrase comes first.
 REASON_KINDS = [("first-seen", "first_seen"), ("limited history", "limited_history"),
-                ("high risk", "high_risk"), ("remit-to account", "remit_changed"), ("currency", "currency")]
+                ("high risk", "high_risk"), ("remit-to account", "remit_changed"), ("currency", "currency"),
+                ("amount above", "amount_over_threshold"), ("decision confidence", "low_confidence"),
+                ("not unanimous", "approval_not_unanimous"), ("approval agent escalated", "approval_agent"),
+                ("critic disagreed", "critic"), ("policy:", "policy")]
 
 
 def reason_kind(reason: str) -> str:
@@ -190,11 +194,15 @@ def _describe(span, name: str, state: dict, result: dict) -> None:
             principal = str(details.get("principal", "")).split(":", 1)[0] or "unknown"
             POLICY.add(1, {"decision": str(details["decision"]), "principal": principal})
         steps_log.info(json.dumps({"run_id": state.get("run_id"), "vendor": vendor, **details}, default=str))
-    reasons = result.get("escalation_reasons")
-    if name == "risk_scoring" and reasons:
+    # Counted when a run starts waiting for a person: by then the list holds every reason, from
+    # whichever step raised it (risk, approval, critic or policy). The phase 9b live run counted
+    # only the risk step's and showed "No data" for a run the approval step escalated.
+    reasons = state.get("escalation_reasons") if name == "pending_human" else None
+    if reasons:
         for reason in reasons:
             ESCALATIONS.add(1, {"kind": reason_kind(reason)})
         span.set_attribute("warden.escalations", len(reasons))
+        span.set_attribute("warden.escalation_kinds", sorted({reason_kind(r) for r in reasons}))
 
 
 @contextmanager
