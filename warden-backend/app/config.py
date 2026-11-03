@@ -52,6 +52,11 @@ def _temperatures(raw: str) -> dict[str, float]:
 # the setting the consistency check (python -m app.consistency) measures against.
 AGENT_TEMPERATURES = _temperatures(os.environ.get("AGENT_TEMPERATURES", ""))
 
+# Phase 9b: an auto-approval must be unanimous across this many asks of the approval agent. The
+# live run found it answering auto_approve 4 times in 10 on identical evidence, and its reasoning
+# model ignores temperature, so agreement is required instead. 1 turns this off.
+APPROVAL_SAMPLES = max(1, int(os.environ.get("APPROVAL_SAMPLES", "3")))
+
 # Business rules the phase 1 live run showed must be explicit, not left to model judgment.
 # A document that prints no currency is taken to be in the ledger's currency; any other
 # currency is escalated, because the ledger does not convert.

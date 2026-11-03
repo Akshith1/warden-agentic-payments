@@ -281,6 +281,15 @@ The phase 7 live run scored two near-identical Kestrel invoices 0.60 and 0.15. T
 
 The run id is the end of the run page's address. Nothing is paid and no run changes; each question is a real model call on that agent's gateway key (about 2,000 tokens). The result prints, and shows on the dashboard under **Consistency checks**: a risk spread above 0.2 on identical evidence means the model, not the invoice, is moving.
 
+What the live run found and what changed:
+
+| Agent | Repeated on identical evidence (K-2026-002) | Change | After |
+| --- | --- | --- | --- |
+| Risk | 0.46 to 0.85, medium and high mixed (5 asks) | `AGENT_TEMPERATURES=risk-scoring=0` | 0.78 to 0.85, high every time (10 asks) |
+| Approval | auto_approve 4 times in 10 | Its reasoning model only accepts temperature 1 (the gateway would silently drop any other), so an auto-approval must now be unanimous across `APPROVAL_SAMPLES` asks (3 by default); any other answer sends the invoice to a person, and the lowest confidence is the one checked against the threshold | Measured with the same check; see the phase 9b live run |
+
+None of this put money at risk: the code rules and Cedar sent this invoice to a person before the approval agent was asked. They matter for vendors that pass those rules.
+
 To test a fix, set a sampling temperature for one agent in `.env`, for example `AGENT_TEMPERATURES=risk-scoring=0`, recreate the backend (`.\infra\scripts\compose.ps1 up -d warden-backend`) and run the check again on the same run. The report names the temperature in use, and each model call's trace span carries it as `gen_ai.request.temperature`.
 
 ### Try it

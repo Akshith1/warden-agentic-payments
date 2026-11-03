@@ -81,7 +81,11 @@ def test_known_vendor_routine_amount_settles(checkpointer, ledger, ledger_url):
     s = state(graph, cfg)
     assert s["status"] == "settled"
     assert cash(ledger_url) == 10000 - 115
-    assert [a for a, _ in fake.calls] == ["guardrail", "extraction", "risk-scoring", "approval", "critic"]
+    # Phase 9b: an auto-approval is asked three times and must be unanimous.
+    assert [a for a, _ in fake.calls] == ["guardrail", "extraction", "risk-scoring", "approval", "approval",
+                                          "approval", "critic"]
+    approval = next(e for e in s["audit_trail"] if e["step"] == "approval")
+    assert approval["asks"] == 3 and approval["answers"] == ["auto_approve"] * 3
     assert dict(fake.calls)["critic"] != dict(fake.calls)["approval"]  # critic on the other provider's route
     assert ledger.lookup_vendor("ACME SUPPLY")["payment_count"] == 4  # history grows only after settlement
     assert [e["step"] for e in s["audit_trail"]][-3:] == ["dry_run", "settlement_hold", "commit"]

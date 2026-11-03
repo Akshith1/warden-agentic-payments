@@ -210,12 +210,19 @@ def test_consistency_repeats_the_same_question_and_measures_the_spread(checkpoin
     graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(vendor="Kestrel Print Works", total=90.0)), run_id)
     values = graph.get_state(cfg).values
 
-    model = Wobbly(invoice(), scores=[0.6, 0.15, 0.35], decisions=[("escalate", 0.7), ("escalate", 0.9),
-                                                                   ("auto_approve", 0.8)])
+    # Repeat 1: escalate at once. Repeat 2: three auto_approves. Repeat 3: auto_approve, then escalate.
+    model = Wobbly(invoice(), scores=[0.6, 0.15, 0.35], decisions=[
+        ("escalate", 0.7), ("auto_approve", 0.9), ("auto_approve", 0.95), ("auto_approve", 0.9),
+        ("auto_approve", 0.8), ("escalate", 0.6)])
     report = consistency.measure(Deps(llm=model), values, times=3)
     assert report["risk"]["scores"] == [0.6, 0.15, 0.35] and report["risk"]["spread"] == 0.45
     assert report["risk"]["original"] == 0.1          # what the run itself got
-    assert report["approval"]["agree"] is False and report["approval"]["spread"] == 0.2
+    approval = report["approval"]
+    assert approval["decisions"] == ["escalate", "auto_approve", "escalate"]
+    assert approval["answers"] == [["escalate"], ["auto_approve"] * 3, ["auto_approve", "escalate"]]
+    assert approval["asks"] == 6 and approval["raw_auto_approve"] == 4
+    assert approval["confidences"] == [0.7, 0.9, 0.6]   # the lowest of each repeat's asks
+    assert approval["agree"] is False and approval["spread"] == 0.3
     # Every repeat sent the evidence the run sent: same text each time, for each agent.
     assert len({user for agent, user in model.sent if agent == "risk-scoring"}) == 1
     assert len({user for agent, user in model.sent if agent == "approval"}) == 1
@@ -224,7 +231,7 @@ def test_consistency_repeats_the_same_question_and_measures_the_spread(checkpoin
     consistency.record(report)
     spread = {p.attributes["agent"]: p.value for p in points("warden.consistency.spread")
               if p.attributes["vendor"] == "Kestrel Print Works"}
-    assert spread == {"risk-scoring": 0.45, "approval": 0.2}
+    assert spread == {"risk-scoring": 0.45, "approval": 0.3}
     assert any(line.get("step") == "consistency" for line in step_lines())
 
 
@@ -278,3 +285,40 @@ def test_the_report_names_the_temperature_and_explains_an_unasked_agent(monkeypa
     text = consistency.describe(consistency.measure(Deps(llm=model), values, times=2))
     assert "Temperature: risk-scoring 0" in text
     assert "not asked (the run went to a person straight after the risk step)" in text
+
+
+@pytest.mark.parametrize("answers, expected, asks", [
+    pytest.param(["auto_approve"] * 3, "auto_approve", 3, id="unanimous: approved"),
+    pytest.param(["auto_approve", "auto_approve", "escalate"], "escalate", 3, id="one dissent: a person decides"),
+    pytest.param(["auto_approve", "reject"], "escalate", 2, id="a later reject: a person decides, not a reject"),
+    pytest.param(["escalate"], "escalate", 1, id="escalate on the first ask: no more asks"),
+    pytest.param(["reject"], "reject", 1, id="reject on the first ask stands"),
+])
+def test_an_auto_approval_must_be_unanimous(answers, expected, asks):
+    from app.agents import Deps
+    from app.agents.approval import approve
+    from app.schemas import ApprovalDecision
+    queue = iter(zip(answers, [0.9, 0.8, 0.95]))
+    calls = []
+
+    def model(agent, route, system, user, response_model):
+        decision, confidence = next(queue)
+        calls.append(decision)
+        return ApprovalDecision(decision=decision, confidence=confidence, reasons=[f"said {decision}"])
+    final, samples = approve(Deps(llm=model), invoice(), {"known": True}, {"risk_score": 0.1}, {})
+    assert final.decision == expected and len(samples) == len(calls) == asks
+    assert final.confidence == min(s.confidence for s in samples)
+    if expected == "escalate" and answers[0] == "auto_approve":
+        assert final.reasons[0].startswith("not unanimous: ")
+
+
+def test_one_ask_when_unanimity_is_turned_off(monkeypatch):
+    from app import config
+    from app.agents import Deps
+    from app.agents.approval import approve
+    from app.schemas import ApprovalDecision
+    monkeypatch.setattr(config, "APPROVAL_SAMPLES", 1)
+    calls = []
+    final, samples = approve(Deps(llm=lambda *a: calls.append(1) or ApprovalDecision(
+        decision="auto_approve", confidence=0.9, reasons=[])), invoice(), {}, {}, {})
+    assert final.decision == "auto_approve" and len(calls) == 1
