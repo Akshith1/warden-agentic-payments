@@ -37,6 +37,7 @@ def measure(deps: Deps, values: dict, times: int) -> dict:
     confidences = [d.confidence for d in decisions]
     return {
         "run_id": values.get("run_id"),
+        "temperatures": {a: t for a, t in config.AGENT_TEMPERATURES.items() if a in ("risk-scoring", "approval")},
         "vendor": ext.get("vendor_name"),
         "times": times,
         "risk": {"original": (values.get("risk") or {}).get("risk_score"), "scores": scores,
@@ -60,11 +61,15 @@ def describe(report: dict) -> str:
     risk, approval = report["risk"], report["approval"]
     lines = [
         f"{report['vendor']}, run {report['run_id']}: asked each agent {report['times']} times with the same evidence.",
+        "Temperature: " + (", ".join(f"{a} {t:g}" for a, t in sorted(report["temperatures"].items()))
+                           or "the provider's default for every agent (AGENT_TEMPERATURES is not set)."),
         f"Risk agent: scores {', '.join(f'{s:.2f}' for s in risk['scores'])} "
         f"(levels {', '.join(risk['levels'])}). The run itself got {risk['original']}.",
         f"  Spread {risk['spread']:.2f}, standard deviation {risk['stdev']:.2f}, mean {risk['mean']:.2f}.",
         f"Approval agent: {', '.join(approval['decisions'])}; confidence "
-        f"{', '.join(f'{c:.2f}' for c in approval['confidences'])}. The run itself: {approval['original']}.",
+        f"{', '.join(f'{c:.2f}' for c in approval['confidences'])}. The run itself: "
+        + (f"{approval['original']}." if approval["original"]
+           else "not asked (the run went to a person straight after the risk step)."),
         "  The decisions " + ("all agree." if approval["agree"] else "DIFFER between identical questions."),
     ]
     level_changes = len(set(risk["levels"])) > 1
