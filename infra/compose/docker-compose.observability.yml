@@ -21,6 +21,10 @@ x-otel: &otel
   # Service logs stay in the container log; the backend sends its step log itself.
   OTEL_LOGS_EXPORTER: none
   OTEL_PYTHON_FASTAPI_EXCLUDED_URLS: health
+  # Report HTTP timings under the current semantic conventions (http.server.request.duration, in
+  # seconds). Without it the instrumentation still uses the old http.server.duration in ms, and the
+  # dashboard's service-latency panel showed "No data" in the phase 9b live run.
+  OTEL_SEMCONV_STABILITY_OPT_IN: http
 
 services:
   lgtm:
