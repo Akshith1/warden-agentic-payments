@@ -40,6 +40,18 @@ LINE_ITEM_TOLERANCE = float(os.environ.get("LINE_ITEM_TOLERANCE", "0.01"))
 SETTLEMENT_HOLD_SECONDS = int(os.environ.get("SETTLEMENT_HOLD_SECONDS", "20"))
 LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))
 
+
+def _temperatures(raw: str) -> dict[str, float]:
+    """AGENT_TEMPERATURES=risk-scoring=0,approval=0.2 -> {"risk-scoring": 0.0, "approval": 0.2}."""
+    pairs = (item.split("=", 1) for item in raw.split(",") if "=" in item)
+    return {agent.strip(): float(value) for agent, value in pairs if agent.strip()}
+
+
+# Phase 9b: a sampling temperature per agent. Unset means the provider's default. The phase 9b
+# live run found the risk agent swinging between medium and high on identical evidence; this is
+# the setting the consistency check (python -m app.consistency) measures against.
+AGENT_TEMPERATURES = _temperatures(os.environ.get("AGENT_TEMPERATURES", ""))
+
 # Business rules the phase 1 live run showed must be explicit, not left to model judgment.
 # A document that prints no currency is taken to be in the ledger's currency; any other
 # currency is escalated, because the ledger does not convert.

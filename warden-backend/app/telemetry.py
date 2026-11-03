@@ -198,11 +198,13 @@ def _describe(span, name: str, state: dict, result: dict) -> None:
 
 
 @contextmanager
-def model_call(agent: str, route: str):
+def model_call(agent: str, route: str, temperature: float | None = None):
     """A span and metrics for one model call, named and attributed per the GenAI conventions."""
     start = time.monotonic()
-    with tracer.start_as_current_span(f"chat {route}", attributes={
-            "gen_ai.operation.name": "chat", "gen_ai.request.model": route, "warden.agent": agent}) as span:
+    attributes = {"gen_ai.operation.name": "chat", "gen_ai.request.model": route, "warden.agent": agent}
+    if temperature is not None:
+        attributes["gen_ai.request.temperature"] = temperature
+    with tracer.start_as_current_span(f"chat {route}", attributes=attributes) as span:
         record = {}
         try:
             yield record

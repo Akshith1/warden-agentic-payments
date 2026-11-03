@@ -246,3 +246,35 @@ def test_consistency_command_loads_a_saved_run_by_id(checkpointer, ledger, monke
     out = capsys.readouterr().out
     assert "Saved Run Supplies" in out and "Spread 0.00" in out and "all agree" in out
     assert consistency.main([str(uuid.uuid4())]) == 2   # an unknown run is refused, not crashed on
+
+
+def test_a_temperature_set_for_an_agent_reaches_the_model_and_the_trace(monkeypatch):
+    from app import config
+    sent = {}
+    completion = SimpleNamespace(model="m", usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1))
+    answer = RiskAssessment(risk_level="low", risk_score=0.1, signals=[], rationale="x")
+
+    def create_with_completion(**kwargs):
+        sent.update(kwargs)
+        return answer, completion
+    fake = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create_with_completion=create_with_completion)))
+    monkeypatch.setattr(llm, "_client", lambda agent: fake)
+    monkeypatch.setattr(config, "AGENT_TEMPERATURES", config._temperatures("risk-scoring=0, approval = 0.2"))
+    llm.structured("risk-scoring", "warden-routine", "s", "u", RiskAssessment)
+    assert sent["temperature"] == 0.0
+    assert by_name("chat warden-routine")[-1].attributes["gen_ai.request.temperature"] == 0.0
+    sent.clear()
+    llm.structured("critic", "warden-routine", "s", "u", RiskAssessment)
+    assert "temperature" not in sent        # other agents keep the provider's default
+
+
+def test_the_report_names_the_temperature_and_explains_an_unasked_agent(monkeypatch):
+    from app import config, consistency
+    from app.agents import Deps
+    monkeypatch.setattr(config, "AGENT_TEMPERATURES", {"risk-scoring": 0.0})
+    values = {"run_id": "r", "extraction": invoice(vendor="Kestrel Print Works"), "vendor": {"known": True},
+              "risk": {"risk_score": 0.6}}
+    model = Wobbly(invoice(), scores=[0.6, 0.6], decisions=[("escalate", 0.8), ("escalate", 0.8)])
+    text = consistency.describe(consistency.measure(Deps(llm=model), values, times=2))
+    assert "Temperature: risk-scoring 0" in text
+    assert "not asked (the run went to a person straight after the risk step)" in text
