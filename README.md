@@ -281,6 +281,8 @@ The phase 7 live run scored two near-identical Kestrel invoices 0.60 and 0.15. T
 
 The run id is the end of the run page's address. Nothing is paid and no run changes; each question is a real model call on that agent's gateway key (about 2,000 tokens). The result prints, and shows on the dashboard under **Consistency checks**: a risk spread above 0.2 on identical evidence means the model, not the invoice, is moving.
 
+To test a fix, set a sampling temperature for one agent in `.env`, for example `AGENT_TEMPERATURES=risk-scoring=0`, recreate the backend (`.\infra\scripts\compose.ps1 up -d warden-backend`) and run the check again on the same run. The report names the temperature in use, and each model call's trace span carries it as `gen_ai.request.temperature`.
+
 ### Try it
 
 After pulling this phase:
