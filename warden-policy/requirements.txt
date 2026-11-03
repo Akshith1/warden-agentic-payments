@@ -11,3 +11,4 @@ opentelemetry-distro==0.66b2
 opentelemetry-exporter-otlp-proto-http==1.45.2
 opentelemetry-instrumentation-fastapi==0.66b2
 opentelemetry-instrumentation-httpx==0.66b2
+spiffe==0.4.0  # phase 6b: workload identity for ledger reads (LEDGER_AUTH=spiffe)

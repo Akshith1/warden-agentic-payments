@@ -1,29 +1,16 @@
 import os
-import secrets
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 from . import db
+from .auth import require_read, require_write
 from .ledger import apply_transaction
 from .models import (AliasRequest, Posting, RecordPaymentRequest, TransactionRequest, ValidationResult,
                      VendorCandidate, VendorLookup)
 
-WRITE_KEY = os.environ["LEDGER_WRITE_KEY"]
-LOOKUP_KEY = os.environ["VENDOR_LOOKUP_KEY"]
 OPENING_CASH = Decimal(os.environ.get("OPENING_CASH", "250000.00"))
-
-
-def _require(expected: str):
-    def check(x_api_key: str = Header(default="")):
-        if not secrets.compare_digest(x_api_key, expected):
-            raise HTTPException(status_code=401, detail="invalid API key")
-    return check
-
-
-require_write = _require(WRITE_KEY)
-require_read = _require(LOOKUP_KEY)
 
 
 @asynccontextmanager

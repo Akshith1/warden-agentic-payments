@@ -17,10 +17,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .policyset import Rejected, load
+from .workload_identity import Identity
 
 POLICY_DIR = os.environ.get("POLICY_DIR", "/policies")
 LEDGER_URL = os.environ.get("LEDGER_URL", "http://warden-ledger:8000")
 VENDOR_LOOKUP_KEY = os.environ.get("VENDOR_LOOKUP_KEY", "")
+# Phase 6b: with LEDGER_AUTH=spiffe the policy service reads the ledger as spiffe://warden.local/policy.
+IDENTITY = Identity()
 CONTROL_URL = os.environ.get("CONTROL_URL", "http://warden-control:8000")
 MONEY_ACTIONS = {"ApprovePayment", "DryRunLedgerEntry", "CreateLedgerEntry", "RecordVendorPayment"}
 
@@ -120,7 +123,7 @@ def kill_switch(principal: "Principal", action: str) -> str | None:
 
 
 def vendor_history(name: str) -> dict:
-    r = state.ledger.get("/vendors/lookup", params={"name": name}, headers={"X-API-Key": VENDOR_LOOKUP_KEY})
+    r = state.ledger.get("/vendors/lookup", params={"name": name}, headers=IDENTITY.headers(VENDOR_LOOKUP_KEY))
     r.raise_for_status()
     return r.json()
 

@@ -11,5 +11,6 @@ exec docker compose --project-name warden --project-directory . --env-file .env 
   -f infra/compose/docker-compose.identity.yml \
   -f infra/compose/docker-compose.app.yml \
   -f infra/compose/docker-compose.observability.yml \
+  -f infra/compose/docker-compose.workload-identity.yml \
   -f infra/compose/docker-compose.catalogue.yml \
   "$@"
