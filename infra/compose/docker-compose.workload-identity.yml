@@ -1,0 +1,94 @@
+# Layer: workload identity (phase 6b). SPIRE 1.15.5: a server (the trust domain's authority), a
+# bootstrap job (join token, CA bundle, the identities in infra/spire/identities.json), and an
+# agent that works out which container is calling its socket and hands it that container's
+# identity. The ledger then accepts a SPIRE-signed identity instead of a shared key.
+#
+# Nothing changes until LEDGER_AUTH=spiffe is set in .env: with the default (keys), SPIRE runs
+# beside the stack and the services keep using their API keys. No service waits for SPIRE to
+# start, so if it can't run on a machine the rest of Warden still does.
+networks:
+  default:
+    name: warden-net
+    external: true
+
+volumes:
+  spire-server-data:
+  spire-server-socket:
+  spire-bootstrap:
+  spire-agent-data:
+  spire-agent-socket:
+
+x-identity: &identity
+  SPIFFE_ENDPOINT_SOCKET: unix:///run/spire/sockets/agent.sock
+  LEDGER_AUTH: ${LEDGER_AUTH:-keys}
+
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.15.5
+    restart: unless-stopped
+    user: "0:0"   # the release image has no writable data folder of its own; ours is a volume
+    command: ["-config", "/etc/spire/server.conf"]
+    volumes:
+      - ./infra/spire/server.conf:/etc/spire/server.conf:ro
+      - spire-server-data:/opt/spire/data/server
+      - spire-server-socket:/run/spire/server
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck", "-socketPath", "/run/spire/server/api.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  spire-bootstrap:
+    build: ./infra/spire/bootstrap
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - spire-server-socket:/run/spire/server
+      - spire-bootstrap:/run/spire/bootstrap
+      - ./infra/spire/identities.json:/etc/spire/identities.json:ro
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.15.5
+    restart: unless-stopped
+    user: "0:0"
+    # To tell callers apart the agent maps a caller's process to its container (host process ids)
+    # and reads that container's labels (the Docker API, read-only).
+    pid: host
+    command: ["-config", "/etc/spire/agent.conf"]
+    depends_on:
+      spire-bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./infra/spire/agent.conf:/etc/spire/agent.conf:ro
+      - spire-agent-data:/opt/spire/data/agent
+      - spire-agent-socket:/run/spire/sockets
+      - spire-bootstrap:/run/spire/bootstrap:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # The workloads that hold an identity: they reach the agent through its socket, read-only.
+  warden-backend:
+    environment: *identity
+    volumes:
+      - spire-agent-socket:/run/spire/sockets:ro
+  warden-policy:
+    environment: *identity
+    volumes:
+      - spire-agent-socket:/run/spire/sockets:ro
+  warden-ledger:
+    environment: *identity
+    volumes:
+      - spire-agent-socket:/run/spire/sockets:ro
