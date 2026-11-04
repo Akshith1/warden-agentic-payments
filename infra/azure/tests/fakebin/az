@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""A stand-in for the Azure CLI, for infra/azure/tests/dry-run.sh only. It answers the
+commands deploy.ps1 and teardown.ps1 use, keeps a fake directory (apps, service principals,
+people, role assignments) in $FAKE_AZ_DIR/state.json, logs every call to $FAKE_AZ_DIR/calls.log,
+and checks the shape of what it is sent (JSON bodies, deployment parameters)."""
+import json, os, sys, uuid, re
+FAKE = os.environ["FAKE_AZ_DIR"]
+args = [a for a in sys.argv[1:] if a != "--only-show-errors"]
+log = open(f"{FAKE}/calls.log", "a"); log.write(" ".join(args) + "\n")
+db_path = f"{FAKE}/state.json"
+db = json.load(open(db_path)) if os.path.exists(db_path) else {"apps": [], "sps": [], "grants": [], "assign": [], "users": [], "providers": {}}
+def save(): json.dump(db, open(db_path, "w"))
+def opt(name):
+    return args[args.index(name) + 1] if name in args else None
+def out(x):
+    if "-o" in args and opt("-o") == "tsv":
+        print(x if not isinstance(x, (dict, list)) else json.dumps(x))
+    else:
+        print(json.dumps(x))
+cmd = " ".join(args[:3])
+if args[:2] == ["account", "show"]:
+    out({"name": "Azure subscription 1", "user": {"name": "me@example.com"}, "tenantId": "tenant-1"})
+elif args[:2] == ["extension", "add"]:
+    pass
+elif args[:2] == ["provider", "show"]:
+    out(db["providers"].get(opt("--namespace"), "NotRegistered"))
+elif args[:2] == ["provider", "register"]:
+    db["providers"][opt("--namespace")] = "Registered"; save()
+elif args[:3] == ["ad", "signed-in-user", "show"]:
+    out({"id": "me-id", "userPrincipalName": "me_example.com#EXT#@x.onmicrosoft.com"})
+elif args[0] == "rest":
+    method, uri = opt("--method"), opt("--uri")
+    body = json.load(open(opt("--body")[1:])) if opt("--body") else None
+    path = re.sub(r"^https://graph.microsoft.com/v1.0", "", uri)
+    if method == "GET" and path == "/domains":
+        out({"value": [{"id": "x.onmicrosoft.com", "isDefault": True}]})
+    elif path.startswith("/applications?"):
+        name = re.search(r"displayName eq '(.*)'", path).group(1)
+        out({"value": [a for a in db["apps"] if a["displayName"] == name]})
+    elif method == "POST" and path == "/applications":
+        assert isinstance(body.get("appRoles", []), list), body
+        a = body | {"id": str(uuid.uuid4()), "appId": str(uuid.uuid4()), "identifierUris": []}
+        db["apps"].append(a); save(); out(a)
+    elif method == "PATCH" and path.startswith("/applications/"):
+        a = next(a for a in db["apps"] if a["id"] == path.split("/")[2]); a.update(body); save()
+        for k in ("redirectUris",):
+            assert isinstance(body.get("web", {}).get(k, []), list)
+    elif method == "GET" and path.startswith("/applications/"):
+        out(next(a for a in db["apps"] if a["id"] == path.split("/")[2]))
+    elif method == "POST" and path.endswith("/addPassword"):
+        out({"secretText": "client-secret-xyz"})
+    elif path.startswith("/servicePrincipals?"):
+        appid = re.search(r"appId eq '(.*)'", path).group(1)
+        if appid == "00000003-0000-0000-c000-000000000000":
+            out({"value": [{"id": "graph-sp"}]})
+        else:
+            out({"value": [s for s in db["sps"] if s["appId"] == appid]})
+    elif method == "POST" and path == "/servicePrincipals":
+        s = {"id": "sp-" + body["appId"][:8], "appId": body["appId"]}; db["sps"].append(s); save(); out(s)
+    elif method == "PATCH" and path.startswith("/servicePrincipals/"):
+        pass
+    elif path.startswith("/oauth2PermissionGrants?"):
+        out({"value": db["grants"]})
+    elif path == "/oauth2PermissionGrants":
+        db["grants"].append(body); save(); out(body)
+    elif path.endswith("/appRoleAssignedTo") and method == "GET":
+        out({"value": db["assign"]})
+    elif path.endswith("/appRoleAssignedTo"):
+        assert body["appRoleId"], body
+        db["assign"].append(body); save(); out(body)
+    elif path.startswith("/users?"):
+        upn = re.search(r"userPrincipalName eq '(.*)'", path).group(1)
+        out({"value": [u for u in db["users"] if u["userPrincipalName"] == upn]})
+    elif path == "/users" and method == "POST":
+        u = body | {"id": str(uuid.uuid4())}; db["users"].append(u); save(); out(u)
+    elif method == "DELETE" and path.startswith("/applications/"):
+        db["apps"] = [a for a in db["apps"] if a["id"] != path.split("/")[2]]; save()
+    else:
+        sys.exit(f"fake az: unhandled rest {method} {path}")
+elif args[:2] == ["group", "create"]:
+    out({})
+elif args[:3] == ["deployment", "group", "create"]:
+    params = json.load(open(opt("-p")[1:]))["parameters"]
+    assert params["agentKeysJson"]["value"].startswith("{"), params["agentKeysJson"]
+    for k in ("openaiApiKey", "signInClientSecret", "postgresAdminPassword", "pgControlPassword"):
+        assert params[k]["value"], k
+    open(f"{FAKE}/params-{params['deployApps']['value']}.json", "w").write(json.dumps(params))
+    out({k: {"type": "String", "value": v} for k, v in {
+        "registryName": "warden123", "registryServer": "warden123.azurecr.io", "vaultName": "warden-kv-abc",
+        "postgresHost": "pg", "environmentDomain": "dom.centralus.azurecontainerapps.io",
+        "consoleUrl": "https://warden-console.dom.centralus.azurecontainerapps.io"}.items()})
+elif args[:2] == ["acr", "login"]:
+    pass
+elif args[:3] == ["containerapp", "job", "start"]:
+    out("exec-1")
+elif args[:4] == ["containerapp", "job", "execution", "show"]:
+    out("Succeeded")
+elif args[:2] == ["group", "exists"]:
+    print("true")
+elif args[:2] == ["group", "delete"]:
+    assert "--yes" in args
+elif args[:2] == ["keyvault", "list-deleted"]:
+    print("warden-kv-abc")
+elif args[:2] == ["keyvault", "purge"]:
+    assert opt("-n") == "warden-kv-abc"
+elif args[:3] == ["ad", "app", "list"]:
+    name = re.search(r"displayName eq '(.*)'", opt("--filter")).group(1)
+    print("\n".join(a["id"] for a in db["apps"] if a["displayName"] == name))
+elif args[:3] == ["ad", "user", "delete"]:
+    pass
+else:
+    sys.exit(f"fake az: unhandled {args}")

@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
-from . import config, telemetry
+from . import config, telemetry, wake
 from .agents import Deps
 from .agents.policy_check import payment_facts
 from .auth import User, require
@@ -148,6 +148,7 @@ def _drive(run_id: str, graph_input, links=None) -> None:
 
 def _drive_traced(run_id: str, graph_input, span) -> None:
     values: dict = {}
+    wake.wake()   # phase 11: on Azure, start any sleeping service before the first step needs it
     try:
         for values in rt.graph.stream(graph_input, _config(run_id), stream_mode="values"):
             _sync(run_id, values)
@@ -217,6 +218,7 @@ def policies():
 
 def _start(initial: dict, user: User) -> dict:
     run_id = str(uuid.uuid4())
+    wake.wake()   # phase 11: so the submission below reaches the audit log even after a quiet spell
     with rt.pool.connection() as conn:
         conn.execute("INSERT INTO runs (run_id, status, source, submitted_by) VALUES (%s, 'submitted', %s, %s)",
                      (run_id, initial["source"], user.username))
@@ -274,6 +276,7 @@ def resume(run_id: str, req: ResumeRequest, user: User = Depends(DECIDER)):
     snapshot = rt.graph.get_state(_config(run_id))
     if not snapshot.interrupts:
         raise HTTPException(status_code=409, detail="run is not waiting for a human")
+    wake.wake()   # phase 11: the services may have gone to sleep while the run waited for a person
     if req.decision == "approve":
         # Ask Cedar before resuming, so a person who may not approve this one (amount over their
         # tier, or their own invoice) is told now and the run stays waiting for someone who may.

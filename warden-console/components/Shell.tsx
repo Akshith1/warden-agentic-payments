@@ -58,7 +58,7 @@ function SignIn({ next }: { next: string }) {
         <p className="brand">Warden</p>
         <h1>Sign in to approve and pay</h1>
         <p className="muted">
-          Sign-in is handled by Keycloak. Warden never sees your password, and every decision you make is
+          Sign-in is handled by a separate identity provider. Warden never sees your password, and every decision you make is
           recorded under your account.
         </p>
         <a className="button" href={`/api/auth/login?next=${encodeURIComponent(next)}`}>Sign in</a>
