@@ -370,8 +370,9 @@ The same core payment path runs on Azure, from one script, sized for a free acco
 | Postgres in a container | Azure Database for PostgreSQL (Flexible Server, B1ms, 32 GB), TLS required |
 | The audit log in a SQLite volume | The control plane's own Postgres database (a container on Azure has no lasting disk). Append-only triggers and the hash chain as before |
 | The hash chain alone | Plus a write-once copy (phase 11b): every entry also goes to Blob storage under an immutability policy, and the Audit log page checks the database against it |
+| Outside systems call the backend on the Docker network | API Management (Consumption) in front of the backend (phase 11b-2): a subscription key, an Entra ID token with the submitter role, a rate limit and a daily quota |
 
-Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, and the write-once audit copy. Not yet: API Management in front of the backend (11b-2); OCR (paste text instead of images), data quality and observability (11b-3). MLflow stays local: the bundled extraction prompt is used on Azure.
+Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, and API Management. Not yet: OCR (paste text instead of images), data quality and observability (11b-3). MLflow stays local: the bundled extraction prompt is used on Azure.
 
 ### Deploy
 
@@ -397,6 +398,18 @@ az containerapp exec -n warden-control -g warden-rg --command "python -m app.tam
 
 The console's Audit log page still says **Chain verified**: the fingerprints are consistent again. Below it, it says **This log no longer matches its write-once copy: entry 3 differs** and marks entry 3 onwards. The copy in Blob storage couldn't have changed, so the database must have. (Locally, without the copy, `python -m app.tamper --seq 3` without `--rechain` is scenario 15: the chain catches a careless edit.)
 
+### The API for outside systems
+
+An outside system submits invoices through API Management at `https://<warden-apim-…>.azure-api.net/warden`: `POST /runs` with `{"invoice_text": "..."}`, then `GET /runs/{run_id}`. It needs a subscription key (the "Invoice intake" product) and an Entra ID token with the `submitter` role; [`apim-policy.xml`](infra/azure/apim-policy.xml) checks both, then allows 10 calls a minute and 500 a day per subscription. The deploy registers a stand-in outside system, the "Warden intake" app, which signs in as itself with the submitter role only. To play it:
+
+```powershell
+.\infra\azure\try-api.ps1
+```
+
+It sends a request without a key (401), with a key but no token (401), with a token straight to the backend (403), properly through the gateway (202, and a run starts), follows the run, and sends a burst until the rate limit answers 429. The run appears in the console as submitted by `app:<the intake app's client ID>`, and the audit log records that it came in through the gateway.
+
+The Consumption tier can't join a private network, so the backend's address is public too. It admits only requests carrying a front-door key (`X-Warden-Entry`): API Management adds one from a secret named value, and the console's server sends another ([`warden-backend/app/entry.py`](warden-backend/app/entry.py)). A request with a valid token but neither key is refused, so nobody can go round the gateway's checks and limits. The backend still checks every token itself.
+
 ### Remove it
 
 ```powershell
@@ -416,6 +429,8 @@ Approximate pay-as-you-go prices from autumn 2026 (US regions); check the [prici
 | Container Registry (Basic) | About $5 a month |
 | Key Vault | A few cents: $0.03 per 10,000 secret reads |
 | Log Analytics | Free up to 5 GB a month; the workspace is capped at 0.15 GB a day |
+| API Management (Consumption) | Free for the first million calls a month |
+| Blob storage (audit copy) | A few cents: kilobytes a day |
 
 So about $5 a month, idle or with occasional demos, plus what the model providers charge for the runs. Set a budget alert in Cost Management, and tear it down when you're done.
 
@@ -705,7 +720,7 @@ These are deliberate and each one is removed by a named later phase.
 - **The approval rules are written twice**, in code (`config.py`) and in Cedar (`policies/`), on purpose: two independent checks. Changing a limit means changing both; the stricter one wins until they agree.
 - **The 24-hour limit's memory of in-flight approvals is in the policy service's memory.** After a restart only the ledger's settled payments count until new approvals come in. Phase 9's audit log is the durable record.
 - **Keycloak runs in development mode** with its own file database in a Docker volume, over plain HTTP on localhost. The Azure profile (phase 11a) puts sign-in behind TLS with Entra ID.
-- **On Azure, the apps call each other over plain HTTP inside the Container Apps environment**, and personal-data masking can reach the internet (Container Apps has no internal-only network like Compose's). Only the console is public. Phase 11b looks at the environment's encryption between apps and a private network.
+- **On Azure, the apps call each other over plain HTTP inside the Container Apps environment**, and personal-data masking can reach the internet (Container Apps has no internal-only network like Compose's). The console and, for API Management's Consumption tier, the backend are public; the backend admits only the console and the gateway. A private network (API Management's Developer or Premium tier inside a virtual network, around $50 a month and up) would let the backend be internal again. Phase 11b looks at the environment's encryption between apps and a private network.
 - **The ledger's write key and the gateway key are still in `.env`.** Phase 6b moves them into a secrets vault (Infisical), fetched fresh before each use, and gives each service its own workload identity (SPIRE).
 - **Only the Extraction prompt is registry-managed.** It is the one the gate can score against labels. The Risk, Approval and Critic prompts are versioned in git; scoring them needs labelled fraud decisions, which no public dataset here provides.
 - **A promoted prompt takes effect on restart**, not live, matching how the backend loads it once at startup.
@@ -733,7 +748,7 @@ These are deliberate and each one is removed by a named later phase.
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry traces, metrics and step logs in Grafana; agent consistency check (done). Langfuse | 24-27 |
 | 10 | GitHub Actions: policies, every test suite, console build, Compose and secret checks (done) | CI |
-| 11 | Azure profile: Container Apps, Entra ID sign-in and managed identities, Key Vault (11a, done); write-once audit copy in Blob storage (11b-1). APIM (11b-2); OCR, data quality and monitoring (11b-3) | 28-31 |
+| 11 | Azure profile: Container Apps, Entra ID sign-in and managed identities, Key Vault (11a, done); write-once audit copy in Blob storage (11b-1); API Management for outside systems (11b-2). OCR, data quality and monitoring (11b-3) | 28-31 |
 
 ## Data sources
 

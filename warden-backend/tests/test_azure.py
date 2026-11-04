@@ -116,3 +116,9 @@ def test_wake_is_off_unless_configured(monkeypatch):
     monkeypatch.setattr(wake, "_last", None)
     monkeypatch.setattr(wake, "ENABLED", False)
     assert wake.wake() == {}
+
+
+def test_an_app_signing_in_as_itself_is_named_by_its_client_id(entra):
+    user = auth.verify(entra_token(preferred_username=None, name=None, idtyp="app", azp="intake-client-id",
+                                   roles=["submitter"]))
+    assert user.username == "app:intake-client-id" and user.roles == {"submitter"}

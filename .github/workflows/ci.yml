@@ -189,10 +189,10 @@ jobs:
           out=$(./bicep lint infra/azure/main.bicep 2>&1) || { echo "$out"; exit 1; }
           if [ -n "$out" ]; then echo "$out"; exit 1; fi
           ./bicep build infra/azure/main.bicep --stdout > /dev/null
-      - name: The deploy and teardown scripts parse
+      - name: The deploy, teardown and try-api scripts parse
         shell: pwsh
         run: |
-          foreach ($f in "infra/azure/deploy.ps1", "infra/azure/teardown.ps1") {
+          foreach ($f in "infra/azure/deploy.ps1", "infra/azure/teardown.ps1", "infra/azure/try-api.ps1") {
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null
             if ($errors) { $errors | ForEach-Object { Write-Error "${f}: $($_.Message)" }; exit 1 }

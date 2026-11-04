@@ -31,7 +31,7 @@ function Invoke-Az {
 $account = (Invoke-Az account show) -join "`n" | ConvertFrom-Json
 Write-Host "Subscription: $($account.name)"
 Write-Host "This deletes the resource group '$ResourceGroup' and everything in it, including the Azure ledger and audit log."
-if (-not $KeepSignIn) { Write-Host "It also removes the 'Warden' and 'Warden ledger' app registrations and the test people amira and clerk." }
+if (-not $KeepSignIn) { Write-Host "It also removes the 'Warden', 'Warden ledger' and 'Warden intake' app registrations and the test people amira and clerk." }
 if (-not $Yes) {
     $answer = Read-Host "Type the resource group's name to confirm"
     if ($answer -ne $ResourceGroup) { Write-Host "Nothing deleted."; exit 1 }
@@ -56,6 +56,14 @@ if ((Invoke-Az group exists -n $ResourceGroup) -eq "true") {
     Write-Host "$ResourceGroup doesn't exist; nothing to delete there."
 }
 
+# A deleted API Management service is kept for 48 hours and holds on to its name; purge it too.
+$apims = Invoke-Az apim deletedservice list --query "[?starts_with(name, 'warden-apim-')].[name, location]" -o tsv
+foreach ($line in @($apims | Where-Object { $_ })) {
+    $name, $where = $line -split "\s+", 2
+    Write-Host "Purging API Management $name"
+    Invoke-Az apim deletedservice purge --service-name $name --location $where | Out-Null
+}
+
 # A deleted vault is kept for 7 days and holds on to its name; purge it so a redeploy works.
 $deleted = (Invoke-Az keyvault list-deleted --resource-type vault --query "[?starts_with(name, 'warden-kv-')].name" -o tsv)
 foreach ($name in @($deleted | Where-Object { $_ })) {
@@ -64,7 +72,7 @@ foreach ($name in @($deleted | Where-Object { $_ })) {
 }
 
 if (-not $KeepSignIn) {
-    foreach ($displayName in "Warden", "Warden ledger") {
+    foreach ($displayName in "Warden", "Warden ledger", "Warden intake") {
         $ids = Invoke-Az ad app list --filter "displayName eq '$displayName'" --query "[].id" -o tsv
         foreach ($id in @($ids | Where-Object { $_ })) {
             Write-Host "Removing app registration $displayName"

@@ -82,13 +82,15 @@ elif args[:2] == ["group", "create"]:
 elif args[:3] == ["deployment", "group", "create"]:
     params = json.load(open(opt("-p")[1:]))["parameters"]
     assert params["agentKeysJson"]["value"].startswith("{"), params["agentKeysJson"]
-    for k in ("openaiApiKey", "signInClientSecret", "postgresAdminPassword", "pgControlPassword"):
+    for k in ("openaiApiKey", "signInClientSecret", "postgresAdminPassword", "pgControlPassword",
+              "entryKeyConsole", "entryKeyGateway", "apimPublisherEmail"):
         assert params[k]["value"], k
     open(f"{FAKE}/params-{params['deployApps']['value']}.json", "w").write(json.dumps(params))
     out({k: {"type": "String", "value": v} for k, v in {
         "registryName": "warden123", "registryServer": "warden123.azurecr.io", "vaultName": "warden-kv-abc",
         "postgresHost": "pg", "environmentDomain": "dom.centralus.azurecontainerapps.io",
-        "consoleUrl": "https://warden-console.dom.centralus.azurecontainerapps.io"}.items()})
+        "consoleUrl": "https://warden-console.dom.centralus.azurecontainerapps.io",
+        "apimGatewayUrl": "https://warden-apim-abcdefgh.azure-api.net/warden"}.items()})
 elif args[:2] == ["acr", "login"]:
     pass
 elif args[:3] == ["containerapp", "job", "start"]:
@@ -103,6 +105,10 @@ elif args[:4] == ["storage", "container", "immutability-policy", "show"]:
     print('"0x8DCAUDIT"')
 elif args[:4] == ["storage", "container", "immutability-policy", "delete"]:
     assert opt("--if-match") == '"0x8DCAUDIT"', opt("--if-match")
+elif args[:3] == ["apim", "deletedservice", "list"]:
+    print("warden-apim-abcdefgh\tcentralus")
+elif args[:3] == ["apim", "deletedservice", "purge"]:
+    assert opt("--service-name") == "warden-apim-abcdefgh" and opt("--location") == "centralus", args
 elif args[:2] == ["group", "exists"]:
     print("true")
 elif args[:2] == ["group", "delete"]:
