@@ -23,7 +23,7 @@ log = logging.getLogger("warden")
 ENABLED = os.environ.get("WAKE_DEPENDENCIES", "").lower() in ("1", "true", "yes")
 TIMEOUT = float(os.environ.get("WAKE_TIMEOUT_SECONDS", "120"))
 FRESH_FOR = 120.0
-_last = 0.0
+_last: float | None = None   # never: the monotonic clock starts near zero at boot
 _lock = threading.Lock()
 
 
@@ -40,7 +40,7 @@ def wake(get=None) -> dict[str, str]:
     if not ENABLED and get is None:
         return {}
     with _lock:
-        if time.monotonic() - _last < FRESH_FOR:
+        if _last is not None and time.monotonic() - _last < FRESH_FOR:
             return {}
         get = get or (lambda url: httpx.get(url, timeout=TIMEOUT).raise_for_status())
         started = time.monotonic()
