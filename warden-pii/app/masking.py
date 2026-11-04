@@ -23,7 +23,7 @@ MASKED = {"PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "IBAN_CODE",
           "BANK_ACCOUNT", "MY_NRIC"}
 MIN_SCORE = {"PERSON": 0.85, "PHONE_NUMBER": 0.4}  # others: 0.5
 # Words spaCy's small model mistakes for names on receipts.
-NOT_NAMES = {"tel", "fax", "cashier", "total", "subtotal", "gst", "sst", "tax", "invoice", "receipt", "qty", "amount",
+NOT_NAMES = {"bill", "tel", "fax", "cashier", "total", "subtotal", "gst", "sst", "tax", "invoice", "receipt", "qty", "amount",
              "change", "cash", "rounding", "thank", "you", "no", "date", "time", "copy", "member", "points",
              "customer", "ic", "nric", "id", "phone", "email", "account", "card", "bank"}
 
@@ -46,6 +46,9 @@ _NRIC = Pattern("Malaysian IC", r"\b\d{6}-\d{2}-\d{4}\b", 0.85)
 _MONEY = re.compile(r"^\(?-?(?:RM|MYR|\$)?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?$|^\d+\.\d{2}$", re.I)
 _ITEM_ROW = re.compile(r"\d+\.\d{2}\s*$")                       # a line ending in an amount
 _POSTCODE = re.compile(r"\b\d{5}\b")                              # an address line (Malaysian and US postcodes)
+# Phase 11b live run: an invoice number ("Invoice No: K-2026-155258") has a phone number's digits.
+_DOC_LABEL = re.compile(r"(?i)\b(?:invoice|inv|receipt|bill|ref|reference|order|po|document|doc|serial)\b"
+                        r"(?:\s*(?:no|number|num|#))?\.?\s*[:#]?\s*[A-Z0-9\-/]*$")
 _COMPANY = re.compile(r"\b(?:co|company|corp|corporation|inc|ltd|limited|llc|plc|bhd|berhad|sdn|enterprise|"
                       r"trading|holdings|group|gmbh)\.?$", re.I)
 
@@ -87,6 +90,8 @@ def _keep(r: RecognizerResult, text: str) -> bool:
     if r.entity_type == "PHONE_NUMBER":
         if _MONEY.match(value) or len(re.sub(r"\D", "", value)) < 7:
             return False
+        if _DOC_LABEL.search(text[text.rfind("\n", 0, r.start) + 1:r.start]):   # a document's number
+            return False
     if r.entity_type == "PERSON":
         words = re.findall(r"[A-Za-z]+", value)
         if not words or all(w.lower() in NOT_NAMES for w in words) or any(c.isdigit() for c in value):
@@ -109,6 +114,9 @@ def _non_overlapping(results: list[RecognizerResult]) -> list[RecognizerResult]:
 
 
 def mask(analyzer: AnalyzerEngine, text: str) -> dict:
+    # Windows line endings change how spaCy splits the text ("Bill" in "Bill To:" became a name),
+    # and nothing downstream needs them.
+    text = text.replace("\r\n", "\n")
     found = [r for r in analyzer.analyze(text=text, language="en") if _keep(r, text)]
     tokens: dict[str, str] = {}      # original -> placeholder
     counts: dict[str, int] = {}

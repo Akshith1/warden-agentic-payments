@@ -124,3 +124,13 @@ def test_an_invoice_item_table_reaches_the_models_intact(api):
 def test_a_name_on_a_receipt_line_with_a_label_is_still_masked(api):
     out = masked(api, "Cashier: Tan Ah Kow\nServed by: Lim Mei Ling   Total 12.50")
     assert {"Tan Ah Kow", "Lim Mei Ling"} <= set(out["mapping"].values())
+
+
+def test_an_invoice_number_is_not_a_phone_number_and_windows_line_endings_change_nothing(api):
+    """Phase 11b live run: the API's invoice came from PowerShell with CRLF line endings; the
+    invoice number was masked as a phone number and "Bill" (of "Bill To:") as a name."""
+    text = INVOICE.replace("K-2026-102", "K-2026-155258").replace("\n", "\r\n")
+    out = masked(api, text)
+    assert "Invoice No: K-2026-155258" in out["masked"] and "Bill To: Warden Demo Co." in out["masked"]
+    assert set(out["mapping"].values()) == {"03-5631 2200", "Siti Nurhaliza"}
+    assert masked(api, "Receipt #: 0123456789\nCall us: 012-345 6789")["mapping"] == {"<PHONE_NUMBER_1>": "012-345 6789"}
