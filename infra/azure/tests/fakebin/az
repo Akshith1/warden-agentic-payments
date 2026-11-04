@@ -95,6 +95,14 @@ elif args[:3] == ["containerapp", "job", "start"]:
     out("exec-1")
 elif args[:4] == ["containerapp", "job", "execution", "show"]:
     out("Succeeded")
+elif args[:3] == ["storage", "account", "list"]:
+    assert "tags.purpose=='audit'" in opt("--query")
+    print("wardenauditabc")
+elif args[:4] == ["storage", "container", "immutability-policy", "show"]:
+    assert opt("--container-name") == "audit"
+    print('"0x8DCAUDIT"')
+elif args[:4] == ["storage", "container", "immutability-policy", "delete"]:
+    assert opt("--if-match") == '"0x8DCAUDIT"', opt("--if-match")
 elif args[:2] == ["group", "exists"]:
     print("true")
 elif args[:2] == ["group", "delete"]:

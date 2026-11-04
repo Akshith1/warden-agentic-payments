@@ -124,7 +124,7 @@ Save-State $state
 # ------------------------------------------------------------------ providers
 Step "Registering resource providers (first time: a few minutes)"
 foreach ($ns in "Microsoft.App", "Microsoft.OperationalInsights", "Microsoft.ContainerRegistry",
-                "Microsoft.DBforPostgreSQL", "Microsoft.KeyVault", "Microsoft.ManagedIdentity") {
+                "Microsoft.DBforPostgreSQL", "Microsoft.KeyVault", "Microsoft.ManagedIdentity", "Microsoft.Storage") {
     $registered = Invoke-Az provider show --namespace $ns --query registrationState -o tsv
     if ($registered -ne "Registered") { Write-Host "  $ns"; Invoke-Az provider register --namespace $ns --wait | Out-Null }
 }

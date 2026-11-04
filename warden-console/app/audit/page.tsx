@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { when } from "@/lib/format";
 import { STEP_LABEL } from "@/lib/status";
-import type { AuditEntry, ChainCheck } from "@/lib/types";
+import type { AuditEntry, ChainCheck, WormCheck } from "@/lib/types";
 import { useLive } from "@/lib/useLive";
 
 function summary(e: AuditEntry): string {
@@ -26,6 +26,7 @@ function summary(e: AuditEntry): string {
 export default function AuditPage() {
   const { data: check } = useLive<ChainCheck>("/api/control/audit/verify", 10000);
   const { data: entries, error } = useLive<AuditEntry[]>("/api/control/audit?limit=200", 5000);
+  const { data: worm } = useLive<WormCheck>("/api/control/audit/worm", 15000);
 
   return (
     <>
@@ -45,6 +46,19 @@ export default function AuditPage() {
           intact; everything from entry {check.broken_at} on can't be trusted.
         </p>
       ))}
+      {worm?.enabled && (worm.matches ? (
+        <p className="notice chain-ok">
+          <strong>Matches the write-once copy.</strong> Entries 1 to {worm.copied_through} are also kept in Azure Blob
+          storage, where nobody can change or delete them, and every one matches this log.
+          {worm.database_through > worm.copied_through && ` ${worm.database_through - worm.copied_through} newer entr${worm.database_through - worm.copied_through === 1 ? "y is" : "ies are"} being copied.`}
+          {worm.last_copy_error && ` The last copy attempt failed (${worm.last_copy_error}); it is retried every few seconds.`}
+        </p>
+      ) : (
+        <p className="notice notice-error chain-broken" role="alert">
+          <strong>This log no longer matches its write-once copy:</strong> {worm.problem}. The copy in Blob storage can&apos;t
+          have changed, so the database has been altered from entry {worm.first_difference} on, even if its chain verifies.
+        </p>
+      ))}
       {error && <p className="notice notice-error">{error}</p>}
       {entries && (
         <table className="runs audit">
@@ -53,7 +67,8 @@ export default function AuditPage() {
           </thead>
           <tbody>
             {entries.map((e) => (
-              <tr key={e.seq} className={check && !check.valid && e.seq >= (check.broken_at ?? Infinity) ? "suspect" : ""}>
+              <tr key={e.seq} className={(check && !check.valid && e.seq >= (check.broken_at ?? Infinity)) ||
+                (worm?.enabled && !worm.matches && e.seq >= (worm.first_difference ?? Infinity)) ? "suspect" : ""}>
                 <td className="num">{e.seq}</td>
                 <td className="nowrap muted">{when(e.at)}</td>
                 <td>{summary(e)}</td>
