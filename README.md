@@ -357,6 +357,64 @@ Both should be healthy, the bootstrap log should list the three identities, and 
 
 It prints `401` and "the ledger takes writes from workload identities only".
 
+## On Azure (phase 11a)
+
+The same core payment path runs on Azure, from one script, sized for a free account's $200 credit.
+
+| Locally | On Azure |
+| --- | --- |
+| Docker Compose | [Container Apps](https://learn.microsoft.com/azure/container-apps/overview), each app scaling to zero after five idle minutes |
+| Keycloak | Entra ID: an app registration "Warden" with app roles `submitter`, `approver` and `controller`. Only people given a role can sign in |
+| SPIRE identities for the ledger | Managed identities: the backend's and the policy service's, each with an Entra ID token for the "Warden ledger" app registration (`LEDGER_AUTH=entra`) |
+| `.env` | Key Vault: the apps read their secrets through a managed identity; nothing secret is in an app's settings |
+| Postgres in a container | Azure Database for PostgreSQL (Flexible Server, B1ms, 32 GB), TLS required |
+| The audit log in a SQLite volume | The control plane's own Postgres database (a container on Azure has no lasting disk). Append-only triggers and the hash chain as before |
+
+Deployed: the console, backend, ledger, policy, control plane, personal-data masking and the model gateway. Not yet: OCR (paste text instead of images), data quality, MLflow (the bundled extraction prompt is used), observability. Phase 11b adds those, API Management in front of the backend, and a write-once (WORM) copy of the audit log in Blob storage.
+
+### Deploy
+
+You need: an Azure subscription you own (`az login`), [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-windows), Docker Desktop running, and `.env` filled in (the model keys come from there). From the repository folder:
+
+```powershell
+.\infra\azure\deploy.ps1
+```
+
+It asks before creating anything. It sets up Entra ID (the two app registrations, you with all three roles, and two test people: `amira`, submitter and approver; `clerk`, submitter), deploys [`infra/azure/main.bicep`](infra/azure/main.bicep), builds the images on your PC and pushes them to the registry, deploys the apps, and creates the databases. The first run takes about 30-45 minutes, mostly Postgres and the image upload; it prints the console's address and the test people's first passwords. Run it again after any change; `-SkipImages` reuses the last images for a settings-only change. `-Location` picks another region if Central US refuses a resource.
+
+Values generated for Azure (Postgres admin password, the gateway's agent keys, the sign-in secret) are kept in `.azure-warden.json`, gitignored, beside `.env`.
+
+**The first page after a quiet spell takes 20-60 seconds**: every app is asleep. The backend wakes the services a run needs before its first step (`WAKE_DEPENDENCIES`), so a run doesn't fail on a sleeping service.
+
+### Remove it
+
+```powershell
+.\infra\azure\teardown.ps1
+```
+
+Deletes the resource group (everything, including the Azure ledger and audit log), purges Key Vault, and removes the app registrations and test people. `-KeepSignIn` keeps the Entra ID part, which costs nothing.
+
+### What it costs
+
+Approximate pay-as-you-go prices from autumn 2026 (US regions); check the [pricing calculator](https://azure.microsoft.com/pricing/calculator/) for current ones.
+
+| Part | Cost |
+| --- | --- |
+| Container Apps | Nothing while asleep. Each month's [free grant](https://learn.microsoft.com/azure/container-apps/billing) (180,000 vCPU-seconds, 360,000 GiB-seconds) covers about 20 hours with all seven apps awake; beyond that, about $0.27 an hour |
+| Postgres B1ms, 32 GB | In a free account's 12-month free services (750 hours a month). Otherwise roughly $15-20 a month |
+| Container Registry (Basic) | About $5 a month |
+| Key Vault | A few cents: $0.03 per 10,000 secret reads |
+| Log Analytics | Free up to 5 GB a month; the workspace is capped at 0.15 GB a day |
+
+So about $5 a month, idle or with occasional demos, plus what the model providers charge for the runs. Set a budget alert in Cost Management, and tear it down when you're done.
+
+### How the pieces hold together
+
+- **Only the console is reachable from the internet**, over HTTPS. The other apps take requests only from inside the Container Apps environment, by name (`http://warden-ledger`).
+- **The ledger checks every token itself**: Entra ID's signature, the tenant, the audience (the "Warden ledger" app), expiry, and then which managed identity is calling. Only the backend's may write; the policy service's may read. A person's token is refused, because it names the console, not a workload ([`warden-ledger/app/auth.py`](warden-ledger/app/auth.py)).
+- **The console, backend and control plane check people's Entra ID tokens** with the same code as Keycloak's: only the issuer, keys, audience and the claim holding roles (`roles` instead of `realm_access.roles`) differ, set by `OIDC_*` and `ROLES_CLAIM`.
+- **Postgres accepts connections only from Azure** (its "Allow Azure services" rule), over TLS, with a password per service. Phase 11b can move it onto a private network.
+
 ## Rotating secrets
 
 `.env.example` once shipped with ready-made values for the local secrets, and they remain in this repository's history. If your `.env` was copied from it, replace them. Every published port now listens on `127.0.0.1` only, so nothing else on your network can reach these services.
@@ -634,7 +692,8 @@ These are deliberate and each one is removed by a named later phase.
 - **Secrets live in `.env`.** Phase 6 moves the ledger write key into Infisical, fetched fresh before every payment.
 - **The approval rules are written twice**, in code (`config.py`) and in Cedar (`policies/`), on purpose: two independent checks. Changing a limit means changing both; the stricter one wins until they agree.
 - **The 24-hour limit's memory of in-flight approvals is in the policy service's memory.** After a restart only the ledger's settled payments count until new approvals come in. Phase 9's audit log is the durable record.
-- **Keycloak runs in development mode** with its own file database in a Docker volume, over plain HTTP on localhost. The Azure profile (phase 11) puts sign-in behind TLS with Entra ID.
+- **Keycloak runs in development mode** with its own file database in a Docker volume, over plain HTTP on localhost. The Azure profile (phase 11a) puts sign-in behind TLS with Entra ID.
+- **On Azure, the apps call each other over plain HTTP inside the Container Apps environment**, and personal-data masking can reach the internet (Container Apps has no internal-only network like Compose's). Only the console is public. Phase 11b looks at the environment's encryption between apps and a private network.
 - **The ledger's write key and the gateway key are still in `.env`.** Phase 6b moves them into a secrets vault (Infisical), fetched fresh before each use, and gives each service its own workload identity (SPIRE).
 - **Only the Extraction prompt is registry-managed.** It is the one the gate can score against labels. The Risk, Approval and Critic prompts are versioned in git; scoring them needs labelled fraud decisions, which no public dataset here provides.
 - **A promoted prompt takes effect on restart**, not live, matching how the backend loads it once at startup.
@@ -662,7 +721,7 @@ These are deliberate and each one is removed by a named later phase.
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry traces, metrics and step logs in Grafana; agent consistency check (done). Langfuse | 24-27 |
 | 10 | GitHub Actions: policies, every test suite, console build, Compose and secret checks (done) | CI |
-| 11 | Azure profile (Container Apps, Entra ID, Key Vault, APIM, Blob WORM) | 28-31 |
+| 11 | Azure profile: Container Apps, Entra ID sign-in and managed identities, Key Vault (11a, done). APIM, Blob WORM audit copy, OCR, data quality and monitoring (11b) | 28-31 |
 
 ## Data sources
 

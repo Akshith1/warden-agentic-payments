@@ -1,0 +1,3 @@
+#!/bin/sh
+# A stand-in for docker, for infra/azure/tests/dry-run.sh only: records what would be built and pushed.
+echo "docker $*" >> "$FAKE_AZ_DIR/docker.log"

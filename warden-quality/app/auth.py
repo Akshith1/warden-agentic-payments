@@ -35,6 +35,14 @@ def _keys() -> jwt.PyJWKClient:
     return _jwks
 
 
+def roles_in(claims: dict) -> list[str]:
+    """The roles at config.ROLES_CLAIM, a dotted path: realm_access.roles (Keycloak) or roles (Entra ID)."""
+    value = claims
+    for part in config.ROLES_CLAIM.split("."):
+        value = value.get(part, {}) if isinstance(value, dict) else {}
+    return [r for r in value if isinstance(r, str)] if isinstance(value, list) else []
+
+
 def verify(token: str) -> User:
     try:
         key = _keys().get_signing_key_from_jwt(token).key
@@ -42,11 +50,11 @@ def verify(token: str) -> User:
                             issuer=config.KEYCLOAK_ISSUER, options={"require": ["exp", "iss", "aud", "sub"]},
                             leeway=30)
     except jwt.PyJWKClientConnectionError as e:
-        raise HTTPException(status_code=503, detail="can't reach Keycloak to check the sign-in") from e
+        raise HTTPException(status_code=503, detail="can't reach the sign-in service to check the sign-in") from e
     except jwt.PyJWTError as e:
         raise HTTPException(status_code=401, detail=f"sign-in not accepted: {e}",
                             headers={"WWW-Authenticate": "Bearer"}) from e
-    roles = frozenset(claims.get("realm_access", {}).get("roles", [])) & ROLES
+    roles = frozenset(roles_in(claims)) & ROLES
     username = claims.get("preferred_username") or claims["sub"]
     return User(username=username, name=claims.get("name") or username, roles=roles)
 

@@ -20,10 +20,13 @@ MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(5 * 2**20)))
 
 # Phase 6: Keycloak. Keys are fetched over the Docker network; the issuer is the URL
 # browsers use, because that is what Keycloak writes into every token.
-KEYCLOAK_ISSUER = os.environ.get("KEYCLOAK_ISSUER", "http://localhost:8180/realms/warden")
-KEYCLOAK_JWKS_URL = os.environ.get("KEYCLOAK_JWKS_URL",
-                                   "http://keycloak:8080/realms/warden/protocol/openid-connect/certs")
+# Phase 11: the same check works for Entra ID on Azure; OIDC_* override the Keycloak names.
+KEYCLOAK_ISSUER = os.environ.get("OIDC_ISSUER") or os.environ.get("KEYCLOAK_ISSUER", "http://localhost:8180/realms/warden")
+KEYCLOAK_JWKS_URL = os.environ.get("OIDC_JWKS_URL") or os.environ.get(
+    "KEYCLOAK_JWKS_URL", "http://keycloak:8080/realms/warden/protocol/openid-connect/certs")
 TOKEN_AUDIENCE = os.environ.get("TOKEN_AUDIENCE", "warden-backend")
+# Where a token lists the person's roles: Keycloak's realm_access.roles, or Entra ID's roles.
+ROLES_CLAIM = os.environ.get("ROLES_CLAIM", "realm_access.roles")
 
 # Phase 7: personal data is masked by warden-pii before any model reads a document.
 PII_URL = os.environ.get("PII_URL", "http://warden-pii:8000")
