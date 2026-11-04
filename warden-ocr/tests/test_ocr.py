@@ -81,3 +81,27 @@ def test_the_jail_refuses_writes_reads_and_network(tmp_path):
     out = subprocess.run([sys.executable, "-m", "app.jail", str(tmp_path), "--", inner, "-c", probe],
                          capture_output=True, text=True, cwd=root)
     assert out.stdout.split() == ["REFUSED", "REFUSED", "REFUSED", "[]"], out.stderr
+
+
+def test_the_network_filter_alone_refuses_internet_sockets_and_keeps_local_ones():
+    """Phase 11b: Azure's kernel offered Landlock ABI 3, which can't refuse TCP. The seccomp
+    filter does it on its own, so it is tested here without Landlock."""
+    import subprocess
+    import sys
+    probe = ("import socket\n"
+             "from app import netdeny\n"
+             "netdeny.apply()\n"
+             "for fam in (socket.AF_INET, socket.AF_INET6, socket.AF_PACKET, socket.AF_NETLINK, socket.AF_UNIX):\n"
+             "    try:\n        socket.socket(fam, socket.SOCK_RAW if fam in (socket.AF_PACKET, socket.AF_NETLINK)"
+             " else socket.SOCK_STREAM).close(); print('ALLOWED')\n"
+             "    except OSError as e:\n        print('REFUSED' if e.errno == 13 else f'OTHER:{e.errno}')\n")
+    root = Path(__file__).resolve().parents[1]
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=root)
+    assert out.stdout.split() == ["REFUSED", "REFUSED", "REFUSED", "REFUSED", "ALLOWED"], out.stderr
+
+
+def test_the_network_filter_refuses_unknown_architectures():
+    from app import netdeny
+    with pytest.raises(netdeny.NetDenyUnavailable):
+        netdeny.program("riscv64")
+    assert len(netdeny.program("x86_64")) % 8 == 0 and len(netdeny.program("aarch64")) % 8 == 0
