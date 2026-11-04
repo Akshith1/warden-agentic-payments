@@ -1,10 +1,13 @@
 import os
 
 CONTROL_DB = os.environ.get("CONTROL_DB", "/data/control.db")
-KEYCLOAK_ISSUER = os.environ.get("KEYCLOAK_ISSUER", "http://localhost:8180/realms/warden")
-KEYCLOAK_JWKS_URL = os.environ.get("KEYCLOAK_JWKS_URL",
-                                   "http://keycloak:8080/realms/warden/protocol/openid-connect/certs")
+# Phase 11: the same check works for Entra ID on Azure; OIDC_* override the Keycloak names.
+KEYCLOAK_ISSUER = os.environ.get("OIDC_ISSUER") or os.environ.get("KEYCLOAK_ISSUER", "http://localhost:8180/realms/warden")
+KEYCLOAK_JWKS_URL = os.environ.get("OIDC_JWKS_URL") or os.environ.get(
+    "KEYCLOAK_JWKS_URL", "http://keycloak:8080/realms/warden/protocol/openid-connect/certs")
 TOKEN_AUDIENCE = os.environ.get("TOKEN_AUDIENCE", "warden-backend")
+# Where a token lists the person's roles: Keycloak's realm_access.roles, or Entra ID's roles.
+ROLES_CLAIM = os.environ.get("ROLES_CLAIM", "realm_access.roles")
 
 # Automatic trips. A canary is a vendor name no genuine invoice contains; seeing one means
 # someone is probing the pipeline, so everything stops. An agent refused this many times in

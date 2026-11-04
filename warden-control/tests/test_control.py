@@ -1,6 +1,10 @@
 """The control plane with a real SQLite file and real signed tokens; only
-Keycloak's key download is replaced."""
+Keycloak's key download is replaced. Phase 11: every test that goes through the
+API also runs against Postgres (the Azure profile's store) when
+CONTROL_TEST_PG_URL names a Postgres server where a database can be created."""
+import os
 import sqlite3
+import uuid
 import subprocess
 import sys
 import time
@@ -32,18 +36,41 @@ def headers(username, *roles):
 CLERK, AMIRA, RAJESH = headers("clerk", "submitter"), headers("amira", "approver"), headers("rajesh", "controller")
 
 
+PG_ADMIN = os.environ.get("CONTROL_TEST_PG_URL", "")
+
+
 @pytest.fixture()
-def api(tmp_path, monkeypatch):
+def postgres_db():
+    if not PG_ADMIN:
+        pytest.skip("CONTROL_TEST_PG_URL not set")
+    import psycopg
+    name = f"control_test_{uuid.uuid4().hex[:10]}"
+    with psycopg.connect(PG_ADMIN, autocommit=True) as admin:
+        admin.execute(f"CREATE DATABASE {name}")
+    url = PG_ADMIN.rsplit("/", 1)[0] + f"/{name}"
+    yield url
+    with psycopg.connect(PG_ADMIN, autocommit=True) as admin:
+        admin.execute(f"DROP DATABASE {name} WITH (FORCE)")
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+def api(request, tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "_jwks", Keys())
-    monkeypatch.setattr(config, "CONTROL_DB", str(tmp_path / "control.db"))
+    db = str(tmp_path / "control.db") if request.param == "sqlite" else request.getfixturevalue("postgres_db")
+    monkeypatch.setattr(config, "CONTROL_DB", db)
     with TestClient(main.app) as client:
         yield client
+        main.state.store.close()
+
+
+sqlite_only = pytest.mark.parametrize("api", ["sqlite"], indirect=True)
 
 
 def step(api, run_id, **payload):
     return api.post("/events", json={"type": "run_step", "run_id": run_id, "payload": payload})
 
 
+@sqlite_only
 def test_the_chain_verifies_and_catches_an_edit(api):
     for i in range(4):
         step(api, f"r{i}", step="human_review", decision="approve", approver="amira")
@@ -65,6 +92,7 @@ def test_the_chain_verifies_and_catches_an_edit(api):
                       "problem": "entry 2 was changed after it was written"}
 
 
+@sqlite_only
 def test_a_deleted_entry_is_caught(api):
     for i in range(3):
         step(api, "r", step="extraction", n=i)
@@ -152,3 +180,29 @@ def test_a_critical_data_quality_failure_stops_everything(api):
     api.post("/kill-switch/reset", json={}, headers=RAJESH)
     api.post("/events", json={"type": "data_quality", "actor": "schedule", "payload": critical})
     assert api.get("/status").json()["global_stop"] is True   # still wrong at the next check: stops again
+
+
+@pytest.mark.parametrize("api", ["postgres"], indirect=True)
+def test_on_postgres_the_log_is_append_only_and_the_chain_catches_an_edit(api):
+    import psycopg
+    for i in range(4):
+        step(api, f"r{i}", step="human_review", decision="approve", approver="amira")
+    assert api.get("/audit/verify", headers=CLERK).json()["entries"] == 4
+    with psycopg.connect(config.CONTROL_DB, autocommit=True) as db:
+        for sql in ("UPDATE audit SET payload = '{}' WHERE seq = 2", "DELETE FROM audit WHERE seq = 2"):
+            with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
+                db.execute(sql)
+        # Someone with the database drops the trigger and rewrites history.
+        db.execute("ALTER TABLE audit DISABLE TRIGGER audit_no_change")
+        db.execute("UPDATE audit SET payload = replace(payload, 'approve', 'reject') WHERE seq = 2")
+        db.execute("ALTER TABLE audit ENABLE TRIGGER audit_no_change")
+    assert api.get("/audit/verify", headers=CLERK).json() == {
+        "valid": False, "entries": 1, "broken_at": 2, "problem": "entry 2 was changed after it was written"}
+
+
+@pytest.mark.parametrize("api", ["postgres"], indirect=True)
+def test_on_postgres_concurrent_appends_keep_one_chain(api):
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda i: step(api, f"r{i}", step="extraction", n=i), range(40)))
+    assert api.get("/audit/verify", headers=CLERK).json()["entries"] == 40

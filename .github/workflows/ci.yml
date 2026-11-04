@@ -53,6 +53,8 @@ jobs:
       PGPASS_MLFLOW: ci-mlflow
       PGPASS_WARDEN_QUALITY: ci-quality
       PGPASS_OPENMETADATA: ci-openmetadata
+      # Phase 11: the control plane's tests also run against Postgres (the Azure profile's store).
+      CONTROL_TEST_PG_URL: postgresql://postgres:ci-postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -72,7 +74,7 @@ jobs:
         run: |
           python -c "from app import landlock; print('Landlock ABI on this runner:', landlock.abi_version())"
           pytest -q -rs
-      - name: Control plane (kill switch, audit chain, spend)
+      - name: Control plane (kill switch, audit chain, spend; SQLite and Postgres)
         working-directory: warden-control
         run: pytest -q
 
@@ -168,6 +170,46 @@ jobs:
       - name: Tests (the model is a test double; MLflow tests skip without a server)
         working-directory: warden-backend
         run: pytest -q -rs
+
+  azure:
+    name: Azure profile (template, deploy scripts, database job)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16   # the version infra/azure/main.bicep deploys
+        env: { POSTGRES_PASSWORD: ci-postgres }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: The Bicep template compiles, with no linter warnings
+        run: |
+          curl -fsSL -o bicep https://github.com/Azure/bicep/releases/download/v0.48.1/bicep-linux-x64
+          chmod +x bicep
+          out=$(./bicep lint infra/azure/main.bicep 2>&1) || { echo "$out"; exit 1; }
+          if [ -n "$out" ]; then echo "$out"; exit 1; fi
+          ./bicep build infra/azure/main.bicep --stdout > /dev/null
+      - name: The deploy and teardown scripts parse
+        shell: pwsh
+        run: |
+          foreach ($f in "infra/azure/deploy.ps1", "infra/azure/teardown.ps1") {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { Write-Error "${f}: $($_.Message)" }; exit 1 }
+          }
+      - name: Deploy, redeploy and tear down against stand-ins for az and docker
+        run: sh infra/azure/tests/dry-run.sh
+      - name: The database job works as a Flexible Server admin (not a superuser), twice
+        env: { PGHOST: localhost, PGPASSWORD: ci-postgres, PGUSER: postgres }
+        run: |
+          psql -qc "CREATE ROLE wardenadmin LOGIN CREATEROLE CREATEDB PASSWORD 'ci-admin'"
+          for password in first second; do
+            PGUSER=wardenadmin PGPASSWORD=ci-admin PGPASS_WARDEN_LEDGER=l-$password \
+              PGPASS_WARDEN_BACKEND=b-$password PGPASS_WARDEN_CONTROL=c-$password sh infra/azure/db-init.sh
+          done
+          # The second run's passwords are the ones that work, and each role reaches only its own database.
+          PGUSER=warden_control PGPASSWORD=c-second psql -d warden_control -tAc "CREATE TABLE t (x int)"
+          if PGUSER=warden_control PGPASSWORD=c-second psql -d warden_ledger -tAc "SELECT 1"; then exit 1; fi
 
   console:
     name: Console type check and build

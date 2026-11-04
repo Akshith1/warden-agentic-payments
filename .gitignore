@@ -13,3 +13,6 @@ mlruns/
 tsconfig.tsbuildinfo
 next-env.d.ts
 .scratch/
+
+# Phase 11: values generated for the Azure deployment (passwords, keys). Never commit.
+.azure-warden.json

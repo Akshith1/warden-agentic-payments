@@ -1,6 +1,6 @@
 """Who may read and write the ledger.
 
-Two modes, chosen with LEDGER_AUTH:
+Three modes, chosen with LEDGER_AUTH:
 
 * keys (the code's default, kept for local tests): a shared API key per
   scope, sent as X-API-Key. Compose no longer configures a write key, so in
@@ -11,6 +11,13 @@ Two modes, chosen with LEDGER_AUTH:
   SPIFFE IDs listed for it. Writes take no key at all: a leaked write key
   stops working. The console still reads with the read key, because its Node
   server has no maintained SPIFFE library; that is the one key left.
+
+* entra (phase 11, the Azure profile): Container Apps has no SPIRE agent, so
+  each caller sends an Entra ID token its managed identity got for the
+  ledger's app registration. The ledger checks the signature against Entra's
+  published keys, the tenant, the audience and expiry, and allows the scope
+  only to the managed identities (client IDs) listed for it. Again nothing
+  that could be copied out of a file.
 
 Validated tokens are remembered until they expire, so the agent is asked once
 per token rather than once per request."""
@@ -32,6 +39,10 @@ TRUST_DOMAIN = os.environ.get("SPIFFE_TRUST_DOMAIN", "warden.local")
 def _ids(name: str, default: str) -> frozenset[str]:
     return frozenset(i.strip() for i in os.environ.get(name, default).split(",") if i.strip())
 
+
+TENANT = os.environ.get("ENTRA_TENANT_ID", "")
+ENTRA_ISSUERS = frozenset({f"https://login.microsoftonline.com/{TENANT}/v2.0", f"https://sts.windows.net/{TENANT}/"})
+ENTRA_JWKS_URL = os.environ.get("ENTRA_JWKS_URL", f"https://login.microsoftonline.com/{TENANT}/discovery/v2.0/keys")
 
 WRITERS = _ids("LEDGER_WRITERS", f"spiffe://{TRUST_DOMAIN}/backend")
 READERS = _ids("LEDGER_READERS", f"spiffe://{TRUST_DOMAIN}/backend,spiffe://{TRUST_DOMAIN}/policy") | WRITERS
@@ -71,11 +82,40 @@ def _workload_api():
     return _client
 
 
+_entra_keys = None
+
+
+def _entra_caller(token: str) -> tuple[str, float]:
+    """The managed identity (client ID) an Entra token proves. Version 1 and 2 tokens both
+    work: they differ in the issuer, the audience's form and the claim naming the caller."""
+    import jwt
+    global _entra_keys
+    if _entra_keys is None:
+        _entra_keys = jwt.PyJWKClient(ENTRA_JWKS_URL, cache_keys=True, lifespan=3600, timeout=10)
+    key = _entra_keys.get_signing_key_from_jwt(token).key
+    claims = jwt.decode(token, key, algorithms=["RS256"], audience=[AUDIENCE, f"api://{AUDIENCE}"],
+                        options={"require": ["exp", "iss", "aud"], "verify_iss": False}, leeway=30)
+    if not TENANT or claims["iss"] not in ENTRA_ISSUERS or claims.get("tid") != TENANT:
+        raise jwt.InvalidIssuerError("token from another tenant")
+    who = claims.get("azp") or claims.get("appid")
+    if not who:
+        raise jwt.MissingRequiredClaimError("azp")
+    return who, float(claims["exp"])
+
+
 def caller(token: str) -> str:
-    """The SPIFFE ID a JWT-SVID proves, as checked by this host's SPIRE agent."""
+    """Who a token proves: a SPIFFE ID checked by this host's SPIRE agent, or (entra mode)
+    a managed identity's client ID checked against Entra ID's keys."""
     known = _validated.get(token)
     if known:
         return known
+    if MODE == "entra":
+        try:
+            who, expiry = _entra_caller(token)
+        except Exception as e:  # noqa: BLE001 - any failure to validate is a refusal
+            raise HTTPException(status_code=401, detail=f"workload identity not accepted: {type(e).__name__}") from e
+        _validated.put(token, who, expiry)
+        return who
     try:
         svid = _workload_api().validate_jwt_svid(token, AUDIENCE)
     except Exception as e:  # noqa: BLE001 - any failure to validate is a refusal
@@ -86,11 +126,11 @@ def caller(token: str) -> str:
 
 
 def _require(scope: str):
-    allowed = WRITERS if scope == "write" else READERS
     key = WRITE_KEY if scope == "write" else LOOKUP_KEY
 
     def check(x_api_key: str = Header(default=""), authorization: str = Header(default="")) -> str:
-        if MODE == "spiffe":
+        allowed = WRITERS if scope == "write" else READERS
+        if MODE in ("spiffe", "entra"):
             if authorization.startswith("Bearer "):
                 spiffe_id = caller(authorization.removeprefix("Bearer ").strip())
                 if spiffe_id not in allowed:

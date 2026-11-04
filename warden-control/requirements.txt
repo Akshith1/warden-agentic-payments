@@ -4,6 +4,7 @@ uvicorn[standard]==0.54.0
 pydantic==2.14.1
 pyjwt[crypto]==2.15.0
 pyyaml==6.0.3
+psycopg[binary,pool]==3.3.6  # phase 11: the audit log in Postgres on Azure (CONTROL_DB=postgresql://...)
 
 # Phase 9b: traces and request metrics via auto-instrumentation (the Dockerfile starts uvicorn
 # through opentelemetry-instrument; Compose points it at Grafana's collector).
