@@ -90,3 +90,37 @@ def test_any_email_is_masked_whatever_its_domain(api, address):
     out = masked(api, f"Queries: {address}  Tel: 07-388 2218")
     assert address not in out["masked"] and out["counts"]["EMAIL_ADDRESS"] == 1
     assert out["mapping"]["<EMAIL_ADDRESS_1>"] == address
+
+
+# Phase 11a live run: the item table and the business's address came out garbled.
+INVOICE = """TAX INVOICE
+
+Kestrel Office Supplies Sdn Bhd
+No. 12, Jalan Perindustrian 3, 47500 Subang Jaya, Selangor
+Tel: 03-5631 2200
+
+Invoice No: K-2026-102
+Date: 04/11/2026
+Bill To: Warden Demo Co.
+Attn: Siti Nurhaliza
+
+Description                     Qty   Unit Price    Amount (RM)
+A4 Copier Paper (box of 5)        4        42.00        168.00
+Printer Toner Cartridge           2       185.00        370.00
+Ballpoint Pens (box of 50)        3        28.00         84.00
+
+TOTAL (RM)                                              622.00"""
+
+
+def test_an_invoice_item_table_reaches_the_models_intact(api):
+    out = masked(api, INVOICE)
+    for kept in ("A4 Copier Paper (box of 5)", "Printer Toner Cartridge", "168.00", "370.00", "622.00",
+                 "47500 Subang Jaya, Selangor", "Bill To: Warden Demo Co."):
+        assert kept in out["masked"], kept
+    # What is personal is still masked: the phone number and the named contact.
+    assert set(out["mapping"].values()) == {"03-5631 2200", "Siti Nurhaliza"}
+
+
+def test_a_name_on_a_receipt_line_with_a_label_is_still_masked(api):
+    out = masked(api, "Cashier: Tan Ah Kow\nServed by: Lim Mei Ling   Total 12.50")
+    assert {"Tan Ah Kow", "Lim Mei Ling"} <= set(out["mapping"].values())
