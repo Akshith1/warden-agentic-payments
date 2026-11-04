@@ -29,7 +29,8 @@ NOT_NAMES = {"tel", "fax", "cashier", "total", "subtotal", "gst", "sst", "tax", 
 
 _LABELLED_NAME = Pattern("labelled name",
                          r"(?im)(?<=\b(?:cashier|customer|attn|attention|salesperson|served by|bill to|name)\s*[:\-]\s*)"
-                         r"[A-Za-z][A-Za-z.' ]{1,40}[A-Za-z]", 0.9)
+                         # up to five words, one space apart: a name ends at a wider gap or the line's end
+                         r"[A-Za-z][A-Za-z.']*(?: [A-Za-z][A-Za-z.']*){0,4}", 0.9)
 _ACCOUNT = Pattern("bank account", r"(?i)(?<=\b(?:account|acct|a/c)(?:\s*(?:no|number))?\.?\s*[:#]?\s*)"
                                    r"\d[\d\- ]{6,22}\d", 0.9)
 # Anything shaped like an email address. Presidio's own email check also requires the domain
@@ -37,6 +38,16 @@ _ACCOUNT = Pattern("bank account", r"(?i)(?<=\b(?:account|acct|a/c)(?:\s*(?:no|n
 # (.example, .internal, .local) slipped through to the models. For masking, the shape is enough.
 _EMAIL = Pattern("email address", r"(?i)\b[a-z0-9._%+\-]+@[a-z0-9\-]+(?:\.[a-z0-9\-]+)+\b", 0.9)
 _NRIC = Pattern("Malaysian IC", r"\b\d{6}-\d{2}-\d{4}\b", 0.85)
+
+# Phase 11a live run: on an invoice's item table spaCy's small model read "Copier Paper" and
+# "Toner Cartridge" as people, "Subang Jaya" (a town) as a person, and Presidio read the amount
+# 168.00 as a phone number. The extraction agent then lost that line. These keep the table and
+# the business's address readable; names after a label ("Cashier:", "Attn:") are still masked.
+_MONEY = re.compile(r"^\(?-?(?:RM|MYR|\$)?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?$|^\d+\.\d{2}$", re.I)
+_ITEM_ROW = re.compile(r"\d+\.\d{2}\s*$")                       # a line ending in an amount
+_POSTCODE = re.compile(r"\b\d{5}\b")                              # an address line (Malaysian and US postcodes)
+_COMPANY = re.compile(r"\b(?:co|company|corp|corporation|inc|ltd|limited|llc|plc|bhd|berhad|sdn|enterprise|"
+                      r"trading|holdings|group|gmbh)\.?$", re.I)
 
 
 # Presidio's email check (replaced below) asks tldextract whether a domain is real. By default
@@ -63,13 +74,28 @@ def build_analyzer() -> AnalyzerEngine:
     return analyzer
 
 
+def _line(text: str, r: RecognizerResult) -> str:
+    start = text.rfind("\n", 0, r.start) + 1
+    end = text.find("\n", r.end)
+    return text[start:end if end != -1 else len(text)]
+
+
 def _keep(r: RecognizerResult, text: str) -> bool:
     if r.entity_type not in MASKED or r.score < MIN_SCORE.get(r.entity_type, 0.5):
         return False
     value = text[r.start:r.end].strip()
+    if r.entity_type == "PHONE_NUMBER":
+        if _MONEY.match(value) or len(re.sub(r"\D", "", value)) < 7:
+            return False
     if r.entity_type == "PERSON":
         words = re.findall(r"[A-Za-z]+", value)
         if not words or all(w.lower() in NOT_NAMES for w in words) or any(c.isdigit() for c in value):
+            return False
+        if _COMPANY.search(value):
+            return False
+        guessed = (r.recognition_metadata or {}).get("recognizer_name") == "SpacyRecognizer"
+        line = _line(text, r)
+        if guessed and (_ITEM_ROW.search(line) or _POSTCODE.search(line)):
             return False
     return True
 
