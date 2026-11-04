@@ -1,13 +1,16 @@
 """Runs one command inside the sandbox:  python -m app.jail <job_dir> -- <command...>
 
-Order matters: resource limits first, then Landlock, then exec. After exec the
-command can read only the system directories it needs and its own job folder,
-can write nowhere, and can open no network connection."""
+Order matters: resource limits first, then Landlock, then the network filter,
+then exec. After exec the command can read only the system directories it
+needs and its own job folder, can write nowhere, and can open no network
+connection: Landlock refuses TCP on ABI 4 and later, and the seccomp filter in
+netdeny.py refuses every non-local socket on any kernel (phase 11b: Azure's
+offered ABI 3). If either can't be applied, the command doesn't run."""
 import os
 import resource
 import sys
 
-from . import landlock
+from . import landlock, netdeny
 
 SYSTEM_READ_EXEC = ["/usr", "/lib", "/lib64", "/bin", "/sbin"]
 SYSTEM_READ = ["/etc", "/proc/self"]  # dynamic linker cache, locale; /proc/self for the runtime
@@ -27,6 +30,7 @@ def main(argv: list[str]) -> None:
     job_dir, command = argv[1], argv[3:]
     limits()
     landlock.restrict(read=SYSTEM_READ + [job_dir], read_exec=SYSTEM_READ_EXEC, write=[])
+    netdeny.apply()
     os.execvpe(command[0], command, {"PATH": "/usr/local/bin:/usr/bin:/bin", "OMP_THREAD_LIMIT": "1",
                                      "LANG": "C.UTF-8"})
 

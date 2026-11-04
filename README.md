@@ -400,7 +400,7 @@ The console's Audit log page still says **Chain verified**: the fingerprints are
 
 ### Scanned invoices on Azure
 
-OCR runs as its own app, `warden-ocr`, and each image is read by Tesseract inside the same Landlock jail as locally: it can read only that image's folder and the system libraries, write nothing, and (Landlock ABI 4 and later) open no network connection. Container Apps has no equivalent of Compose's network-less, read-only container, so on Azure the jail is the whole sandbox. Whether this Azure kernel offers Landlock is checked, not assumed: if it doesn't, OCR's health reports `unsandboxed` and it refuses images instead of reading them unsandboxed. To see which, and what the jail refuses:
+OCR runs as its own app, `warden-ocr`, and each image is read by Tesseract inside the same jail as locally: it can read only that image's folder and the system libraries, write nothing, and open no network connection. Container Apps has no equivalent of Compose's network-less, read-only container, so on Azure the jail is the whole sandbox. Azure's kernel offered Landlock ABI 3, which can't refuse TCP; the first live run's self-test showed the jail could reach the internet, and the seccomp filter (`netdeny.py`) was added to close that. Whether this Azure kernel offers Landlock is checked, not assumed: if it doesn't, OCR's health reports `unsandboxed` and it refuses images instead of reading them unsandboxed. To see which, and what the jail refuses:
 
 ```powershell
 az containerapp exec -n warden-ocr -g warden-rg --command "python -m app.selftest"
@@ -543,7 +543,7 @@ If either layer flags the document, the run is **blocked**, with the words that 
 | --- | --- |
 | No route to the internet: its only network is `warden-ocr`, an internal Docker network shared with the backend alone | `docker-compose.app.yml` |
 | Read-only root filesystem, non-root user (uid 10001), all Linux capabilities dropped, no privilege escalation, 64 processes, 1.5 GB memory | `docker-compose.app.yml` |
-| Each image is read by a separate Tesseract process under a **Landlock** ruleset: it can read only the system libraries and its own job folder, can write nowhere, and can't open a network connection. The kernel enforces this, so it holds even if Tesseract is compromised. CPU time, memory and file size are capped too. | `warden-ocr/app/jail.py`, `landlock.py` |
+| Each image is read by a separate Tesseract process under a **Landlock** ruleset: it can read only the system libraries and its own job folder, can write nowhere, and can't open a network connection. A **seccomp** filter also refuses every socket except local (Unix) ones, because Landlock blocks TCP only from version 4 and Azure's kernel offered 3. The kernel enforces both, so they hold even if Tesseract is compromised; if either can't be applied, Tesseract doesn't run. CPU time, memory and file size are capped too. | `warden-ocr/app/jail.py`, `landlock.py`, `netdeny.py` |
 | The job folder is deleted after each image, and the backend drops the image from the run once it has the text | `warden-ocr/app/main.py`, `agents/ocr.py` |
 
 If the kernel has no Landlock, the service refuses to read images rather than reading them unsandboxed (`/health` reports `"unsandboxed"`).
