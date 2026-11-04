@@ -60,6 +60,14 @@ param pgBackendPassword string
 param pgControlPassword string
 @secure()
 param signInClientSecret string
+@description('Phase 11b-2: the front-door keys the backend admits (the console\'s and API Management\'s).')
+@secure()
+param entryKeyConsole string
+@secure()
+param entryKeyGateway string
+@description('Phase 11b-2: API Management requires a publisher email (notices about the service go there).')
+param apimPublisherEmail string
+
 @description('The per-agent gateway keys, as the JSON file the gateway and backend read.')
 @secure()
 param agentKeysJson string
@@ -170,6 +178,8 @@ var secretValues = {
   'control-db-url': 'postgresql://warden_control:${pgControlPassword}@${postgresHost}:5432/warden_control?sslmode=require'
   'signin-client-secret': signInClientSecret
   'agent-keys-json': agentKeysJson
+  'entry-keys': 'console:${entryKeyConsole},apim:${entryKeyGateway}'
+  'console-entry-key': entryKeyConsole
 }
 
 resource secrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [for s in items(secretValues): {
@@ -277,6 +287,93 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
+// ---------------------------------------------------------------- API Management (phase 11b-2)
+// Outside systems submit invoices here, not to the backend: a subscription key, an Entra ID
+// token with the submitter role, and a rate limit and daily quota per subscription. The
+// Consumption tier (1 million calls a month free) can't join a private network, so the backend
+// is public too; it admits only requests carrying a front-door key, which this adds.
+var backendUrl = 'https://warden-backend.${env.properties.defaultDomain}'
+
+resource apim 'Microsoft.ApiManagement/service@2022-08-01' = {
+  name: '${prefix}-apim-${take(suffix, 8)}'
+  location: location
+  tags: tags
+  sku: { name: 'Consumption', capacity: 0 }
+  properties: {
+    publisherEmail: apimPublisherEmail
+    publisherName: 'Warden'
+  }
+}
+
+resource apimEntryKey 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
+  parent: apim
+  name: 'warden-entry-key'
+  properties: { displayName: 'warden-entry-key', secret: true, value: entryKeyGateway }
+}
+
+resource apimApi 'Microsoft.ApiManagement/service/apis@2022-08-01' = {
+  parent: apim
+  name: 'warden'
+  properties: {
+    displayName: 'Warden invoices'
+    path: 'warden'
+    protocols: ['https']
+    serviceUrl: backendUrl
+    subscriptionRequired: true
+    subscriptionKeyParameterNames: { header: 'Ocp-Apim-Subscription-Key', query: 'subscription-key' }
+  }
+}
+
+resource submitOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: apimApi
+  name: 'submit-invoice'
+  properties: { displayName: 'Submit an invoice', method: 'POST', urlTemplate: '/runs' }
+}
+
+resource runOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: apimApi
+  name: 'get-run'
+  properties: {
+    displayName: 'See a run'
+    method: 'GET'
+    urlTemplate: '/runs/{run_id}'
+    templateParameters: [{ name: 'run_id', type: 'string', required: true }]
+  }
+}
+
+resource apimPolicy 'Microsoft.ApiManagement/service/apis/policies@2022-08-01' = {
+  parent: apimApi
+  name: 'policy'
+  dependsOn: [apimEntryKey]
+  properties: {
+    format: 'rawxml'
+    value: replace(replace(loadTextContent('apim-policy.xml'), '__TENANT__', tenantId), '__APP__', signInAppId)
+  }
+}
+
+resource intakeProduct 'Microsoft.ApiManagement/service/products@2022-08-01' = {
+  parent: apim
+  name: 'intake'
+  properties: {
+    displayName: 'Invoice intake'
+    description: 'Submit invoices and follow their runs.'
+    subscriptionRequired: true
+    approvalRequired: false
+    state: 'published'
+  }
+}
+
+resource intakeProductApi 'Microsoft.ApiManagement/service/products/apis@2022-08-01' = {
+  parent: intakeProduct
+  name: apimApi.name
+}
+
+resource intakeSubscription 'Microsoft.ApiManagement/service/subscriptions@2022-08-01' = {
+  parent: apim
+  name: 'intake'
+  properties: { displayName: 'Intake system', scope: intakeProduct.id, state: 'active' }
+}
+
 // ---------------------------------------------------------------- apps (second pass)
 var registryServer = registry.properties.loginServer
 var consoleUrl = 'https://warden-console.${env.properties.defaultDomain}'
@@ -361,11 +458,11 @@ var apps = [
     name: 'warden-backend'
     image: 'warden-backend'
     port: 8000
-    external: false
+    external: true // phase 11b-2: API Management's Consumption tier reaches it over the internet
     cpu: '0.5'
     memory: '1Gi'
     workloadIdentity: backendIdentity.id
-    secrets: ['pg-backend-password', 'agent-keys-json']
+    secrets: ['pg-backend-password', 'agent-keys-json', 'entry-keys']
     volumes: [agentKeysVolume]
   }
   {
@@ -376,7 +473,7 @@ var apps = [
     cpu: '0.25'
     memory: '0.5Gi'
     workloadIdentity: ''
-    secrets: ['vendor-lookup-key', 'signin-client-secret']
+    secrets: ['vendor-lookup-key', 'signin-client-secret', 'console-entry-key']
     volumes: []
   }
 ]
@@ -428,6 +525,7 @@ var appEnv = [
     { name: 'LEDGER_AUDIENCE', value: 'api://${ledgerAppId}' }
     { name: 'AZURE_CLIENT_ID', value: backendIdentity.properties.clientId }
     { name: 'WAKE_DEPENDENCIES', value: 'true' }
+    { name: 'ENTRY_KEYS', secretRef: 'entry-keys' } // phase 11b-2: only the console and API Management get in
     { name: 'ROUTINE_AMOUNT_THRESHOLD', value: routineAmountThreshold }
     { name: 'CONFIDENCE_THRESHOLD', value: confidenceThreshold }
     { name: 'SETTLEMENT_HOLD_SECONDS', value: settlementHoldSeconds }
@@ -439,6 +537,7 @@ var appEnv = [
   [
     { name: 'HOSTNAME', value: '0.0.0.0' } // Next.js listens on every interface, whatever the platform sets
     { name: 'BACKEND_URL', value: 'http://warden-backend' }
+    { name: 'BACKEND_ENTRY_KEY', secretRef: 'console-entry-key' }
     { name: 'LEDGER_URL', value: 'http://warden-ledger' }
     { name: 'CONTROL_URL', value: 'http://warden-control' }
     { name: 'CONSOLE_URL', value: consoleUrl }
@@ -474,8 +573,9 @@ resource containerApps 'Microsoft.App/containerApps@2024-03-01' = [for (app, i) 
         targetPort: app.port
         transport: 'http'
         // Inside the environment the apps call each other over plain HTTP by name
-        // (http://warden-ledger); only the console is reachable from outside, over HTTPS.
-        allowInsecure: !app.external
+        // (http://warden-ledger). From outside: the console, and the backend for API Management.
+        // The backend is public for API Management (11b-2) but the console still calls it by name.
+        allowInsecure: !app.external || app.name == 'warden-backend'
       }
       registries: [{ server: registryServer, identity: appsIdentity.id }]
       secrets: [for s in app.secrets: vaultSecret(vault.properties.vaultUri, s, appsIdentity.id)]
@@ -549,3 +649,6 @@ output backendIdentityClientId string = backendIdentity.properties.clientId
 output policyIdentityClientId string = policyIdentity.properties.clientId
 output auditStorageName string = auditStorage.name
 output auditCopyUrl string = auditCopyUrl
+output apimName string = apim.name
+output apimGatewayUrl string = '${apim.properties.gatewayUrl}/warden'
+output backendUrl string = backendUrl

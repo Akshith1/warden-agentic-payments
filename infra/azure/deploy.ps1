@@ -116,6 +116,8 @@ function Ensure-State($name, $value) {
 }
 Ensure-State "pgAdminPassword" ((New-Secret 24) + "-Wd7")
 Ensure-State "pgControlPassword" (New-Secret 24)
+Ensure-State "entryKeyConsole" (New-Secret 32)    # phase 11b-2: the backend's front-door keys
+Ensure-State "entryKeyGateway" (New-Secret 32)
 $agents = @("guardrail", "extraction", "risk-scoring", "approval", "critic", "eval-gate")
 $keys = [ordered]@{}; foreach ($a in $agents) { $keys[$a] = "sk-warden-$a-" + (New-Secret 24) }
 Ensure-State "agentKeys" $keys
@@ -124,7 +126,7 @@ Save-State $state
 # ------------------------------------------------------------------ providers
 Step "Registering resource providers (first time: a few minutes)"
 foreach ($ns in "Microsoft.App", "Microsoft.OperationalInsights", "Microsoft.ContainerRegistry",
-                "Microsoft.DBforPostgreSQL", "Microsoft.KeyVault", "Microsoft.ManagedIdentity", "Microsoft.Storage") {
+                "Microsoft.DBforPostgreSQL", "Microsoft.KeyVault", "Microsoft.ManagedIdentity", "Microsoft.Storage", "Microsoft.ApiManagement") {
     $registered = Invoke-Az provider show --namespace $ns --query registrationState -o tsv
     if ($registered -ne "Registered") { Write-Host "  $ns"; Invoke-Az provider register --namespace $ns --wait | Out-Null }
 }
@@ -212,6 +214,17 @@ if (-not ($state.PSObject.Properties.Name -contains "signInClientSecret")) {
 
 # People and roles.
 $app = Invoke-Graph GET "$Graph/applications/$($app.id)"
+# Phase 11b-2: an outside system may hold the submitter role too (and only that one).
+$submitterRole = $app.appRoles | Where-Object { $_.value -eq "submitter" }
+if (-not ($submitterRole.allowedMemberTypes -contains "Application")) {
+    Write-Host "  letting apps hold the submitter role"
+    $roles = @($app.appRoles | ForEach-Object {
+            [string[]]$types = if ($_.value -eq "submitter") { @("User", "Application") } else { @($_.allowedMemberTypes) }
+            @{ id = $_.id; value = $_.value; displayName = $_.displayName; description = $_.description
+               allowedMemberTypes = $types; isEnabled = $_.isEnabled } })
+    Invoke-Graph PATCH "$Graph/applications/$($app.id)" @{ appRoles = $roles } | Out-Null
+    $app = Invoke-Graph GET "$Graph/applications/$($app.id)"
+}
 $roleIds = @{}; foreach ($r in $app.appRoles) { $roleIds[$r.value] = $r.id }
 $assigned = (Invoke-Graph GET "$Graph/servicePrincipals/$($signInSp.id)/appRoleAssignedTo").value
 function Grant-Role($principalId, $role) {
@@ -221,6 +234,24 @@ function Grant-Role($principalId, $role) {
     }
 }
 foreach ($role in "submitter", "approver", "controller") { Grant-Role $me.id $role }
+
+# Phase 11b-2: "Warden intake", standing in for an outside system that submits invoices through
+# API Management. It signs in as itself (no person), with its own secret, and is a submitter only.
+$intakeApp = Find-App "Warden intake"
+if (-not $intakeApp) {
+    Write-Host "  creating the Warden intake app registration"
+    $intakeApp = Invoke-Graph POST "$Graph/applications" @{ displayName = "Warden intake"; signInAudience = "AzureADMyOrg" }
+}
+$intakeSp = Ensure-ServicePrincipal $intakeApp.appId
+if (-not ($state.PSObject.Properties.Name -contains "intakeClientSecret")) {
+    Write-Host "  creating the intake app's client secret (valid one year)"
+    $cred = Invoke-Graph POST "$Graph/applications/$($intakeApp.id)/addPassword" @{
+        passwordCredential = @{ displayName = "warden-intake"; endDateTime = (Get-Date).AddYears(1).ToUniversalTime().ToString("o") } }
+    Ensure-State "intakeClientSecret" $cred.secretText
+}
+$state | Add-Member -NotePropertyName "intakeAppId" -NotePropertyValue $intakeApp.appId -Force
+Save-State $state
+Grant-Role $intakeSp.id "submitter"
 
 Ensure-State "people" (New-Object PSObject)
 $testPeople = @(
@@ -268,6 +299,9 @@ function Deploy-Bicep([bool]$apps, [string]$tag) {
             pgControlPassword      = @{ value = $state.pgControlPassword }
             signInClientSecret     = @{ value = $state.signInClientSecret }
             agentKeysJson          = @{ value = ($state.agentKeys | ConvertTo-Json -Compress) }
+            entryKeyConsole        = @{ value = $state.entryKeyConsole }
+            entryKeyGateway        = @{ value = $state.entryKeyGateway }
+            apimPublisherEmail     = @{ value = $account.user.name }
         }
     }
     foreach ($pair in @(@("OPENING_CASH", "openingCash"), @("ROUTINE_AMOUNT_THRESHOLD", "routineAmountThreshold"),
@@ -286,7 +320,7 @@ function Deploy-Bicep([bool]$apps, [string]$tag) {
     } finally { Remove-Item $file -ErrorAction SilentlyContinue }
 }
 
-Step "Deploying the foundations (first time: about 10 minutes, mostly Postgres)"
+Step "Deploying the foundations (first time: about 10 minutes, mostly Postgres and API Management)"
 Invoke-Az group create -n $ResourceGroup -l $Location --tags project=warden | Out-Null
 $out = Deploy-Bicep $false "none"
 $state | Add-Member -NotePropertyName "vaultName" -NotePropertyValue $out.vaultName -Force
@@ -364,6 +398,7 @@ if ($status -ne "Succeeded") {
 # ------------------------------------------------------------------ done
 Step "Warden is on Azure"
 Write-Host "Console:  $consoleUrl"
+Write-Host "API:      $($out.apimGatewayUrl)   (try it: .\infra\azure\try-api.ps1)"
 Write-Host "Sign in with your own Microsoft account: you have submitter, approver and controller."
 foreach ($p in $state.people.PSObject.Properties) {
     Write-Host ("Test person {0}: {1}   first password: {2}  (must be changed at first sign-in)" -f $p.Name, $p.Value.upn, $p.Value.firstPassword)

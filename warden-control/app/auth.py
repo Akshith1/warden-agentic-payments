@@ -55,7 +55,9 @@ def verify(token: str) -> User:
         raise HTTPException(status_code=401, detail=f"sign-in not accepted: {e}",
                             headers={"WWW-Authenticate": "Bearer"}) from e
     roles = frozenset(roles_in(claims)) & ROLES
-    username = claims.get("preferred_username") or claims["sub"]
+    # An app signing in as itself (phase 11b-2's intake app) has no username: name it by its client ID.
+    app_only = claims.get("idtyp") == "app" and claims.get("azp")
+    username = claims.get("preferred_username") or (f"app:{claims['azp']}" if app_only else claims["sub"])
     return User(username=username, name=claims.get("name") or username, roles=roles)
 
 

@@ -6,14 +6,15 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.types import Command
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
-from . import config, telemetry, wake
+from . import config, entry, telemetry, wake
 from .agents import Deps
 from .agents.policy_check import payment_facts
 from .auth import User, require
@@ -72,6 +73,18 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="warden-backend", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def front_door(request: Request, call_next):
+    """Phase 11b-2: on Azure, only requests through API Management or the console get in."""
+    request.state.entry = None
+    if entry.KEYS and request.url.path not in entry.OPEN_PATHS:
+        request.state.entry = entry.which(request.headers.get(entry.HEADER, ""))
+        if request.state.entry is None:
+            return JSONResponse(status_code=403, content={
+                "detail": "come in through the console or the API gateway"})
+    return await call_next(request)
 if telemetry.configure():   # phase 9b: only when OTEL_EXPORTER_OTLP_ENDPOINT is set
     telemetry.instrument(app)
 
@@ -216,14 +229,15 @@ def policies():
     return {"cedar": cedar, "capabilities": manifests}
 
 
-def _start(initial: dict, user: User) -> dict:
+def _start(initial: dict, user: User, via: str | None = None) -> dict:
     run_id = str(uuid.uuid4())
     wake.wake()   # phase 11: so the submission below reaches the audit log even after a quiet spell
     with rt.pool.connection() as conn:
         conn.execute("INSERT INTO runs (run_id, status, source, submitted_by) VALUES (%s, 'submitted', %s, %s)",
                      (run_id, initial["source"], user.username))
     try:
-        rt.deps.control.record("run_submitted", {"source": initial["source"]}, run_id=run_id, actor=user.username)
+        rt.deps.control.record("run_submitted", {"source": initial["source"]} | ({"via": via} if via else {}),
+                               run_id=run_id, actor=user.username)
     except Exception:
         log.warning("could not record the submission of run %s", run_id)
     rt.workers.submit(_drive, run_id, initial | {"run_id": run_id, "submitted_by": user.username,
@@ -233,17 +247,18 @@ def _start(initial: dict, user: User) -> dict:
 
 
 @app.post("/runs", status_code=202)
-def submit(req: SubmitRequest, user: User = Depends(SUBMITTER)):
-    return _start({"invoice_text": req.invoice_text, "source": req.source}, user)
+def submit(req: SubmitRequest, request: Request, user: User = Depends(SUBMITTER)):
+    return _start({"invoice_text": req.invoice_text, "source": req.source}, user, via=request.state.entry)
 
 
 @app.post("/runs/image", status_code=202)
-def submit_image(req: ImageSubmitRequest, user: User = Depends(SUBMITTER)):
+def submit_image(req: ImageSubmitRequest, request: Request, user: User = Depends(SUBMITTER)):
     """A scanned invoice. The backend never opens the image: the first step sends it to
     the sandboxed OCR service, and the text then goes through the guardrail like pasted text."""
     if len(req.image_base64) * 3 // 4 > config.MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail=f"image larger than {config.MAX_IMAGE_BYTES // 2**20} MB")
-    return _start({"invoice_text": "", "image_base64": req.image_base64, "source": "ocr"}, user)
+    return _start({"invoice_text": "", "image_base64": req.image_base64, "source": "ocr"}, user,
+                  via=request.state.entry)
 
 
 @app.get("/runs", dependencies=[Depends(ANYONE)])

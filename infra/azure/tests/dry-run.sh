@@ -16,6 +16,8 @@ cd "$work/repo"
 echo "--- first deploy"
 pwsh -NoProfile -File infra/azure/deploy.ps1 -Yes
 grep -q '"signInClientSecret"' .azure-warden.json
+grep -q '"intakeClientSecret"' .azure-warden.json
+grep -q '"entryKeyGateway"' .azure-warden.json
 test "$(grep -c '^docker push' "$FAKE_AZ_DIR/docker.log")" -eq 8          # 10 builds, the 2 bases stay local
 python3 - "$FAKE_AZ_DIR" <<'PY'
 import json, sys
@@ -24,7 +26,12 @@ state = json.load(open(f"{d}/state.json"))
 warden = next(a for a in state["apps"] if a["displayName"] == "Warden")
 assert sorted(r["value"] for r in warden["appRoles"]) == ["approver", "controller", "submitter"]
 assert warden["web"]["redirectUris"][0].endswith("/api/auth/callback"), warden["web"]
-assert len(state["assign"]) == 6, state["assign"]          # me x3, amira x2, clerk x1
+assert len(state["assign"]) == 7, state["assign"]          # me x3, amira x2, clerk x1, the intake app x1
+submitter = next(r for r in warden["appRoles"] if r["value"] == "submitter")
+assert submitter["allowedMemberTypes"] == ["User", "Application"], submitter
+assert all(r["allowedMemberTypes"] == ["User"] for r in warden["appRoles"] if r["value"] != "submitter")
+intake = next(a for a in state["apps"] if a["displayName"] == "Warden intake")
+assert any(a["principalId"] == "sp-" + intake["appId"][:8] for a in state["assign"])
 assert len(state["grants"]) == 2 and len(state["users"]) == 2
 apps = json.load(open(f"{d}/params-True.json"))
 assert json.loads(apps["agentKeysJson"]["value"]).keys() >= {"extraction", "approval"}
@@ -45,5 +52,6 @@ test "$(grep -n '^storage container immutability-policy delete' "$FAKE_AZ_DIR/ca
      "$(grep -n '^group delete' "$FAKE_AZ_DIR/calls.log" | cut -d: -f1)"     # the policy goes first
 grep -q '^group delete -n warden-rg --yes' "$FAKE_AZ_DIR/calls.log"
 grep -q '^keyvault purge' "$FAKE_AZ_DIR/calls.log"
+grep -q '^apim deletedservice purge' "$FAKE_AZ_DIR/calls.log"
 echo "dry run passed"
-rm -rf "$work"
+rm -rf "$work"  # (kept on failure for inspection)

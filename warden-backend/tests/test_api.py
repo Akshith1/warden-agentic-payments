@@ -245,3 +245,27 @@ def test_stopped_run_fails_with_the_reason_then_retries_and_every_step_is_on_the
     assert steps == ["privacy", "guardrail", "extraction", "risk_scoring", "approval", "critic", "policy", "dry_run",
                      "settlement_hold", "commit"]  # each once, in order, despite two stops and retries
     assert [e[0] for e in events].count("run_stopped") == 2
+
+
+def test_on_azure_only_the_console_and_the_gateway_get_in(api, monkeypatch):
+    """Phase 11b-2: with ENTRY_KEYS set, a request needs a front door's key, whatever its token."""
+    from app import entry
+    monkeypatch.setattr(entry, "KEYS", {"console": "console-key", "apim": "gateway-key"})
+    recorded = []
+    monkeypatch.setattr(main.rt.deps.control, "record", lambda *a, **k: recorded.append((a, k)))
+    assert api.get("/health").status_code == 200                                  # probes need no key
+    refused = api.get("/runs")
+    assert refused.status_code == 403 and refused.json()["detail"] == "come in through the console or the API gateway"
+    assert api.get("/runs", headers={"X-Warden-Entry": "guessed"}).status_code == 403
+    assert api.get("/runs", headers={"X-Warden-Entry": "console-key"}).status_code == 200
+    r = api.post("/runs", json={"invoice_text": "Invoice"}, headers={"X-Warden-Entry": "gateway-key"})
+    assert r.status_code == 202
+    submitted = next(a for a, k in recorded if a[0] == "run_submitted")
+    assert submitted[1] == {"source": "paste", "via": "apim"}                     # the audit log says how it came in
+
+
+def test_entry_keys_parse_and_match():
+    from app import entry
+    keys = entry._parse("console:abc, apim:def,broken,:nokey,noname:")
+    assert keys == {"console": "abc", "apim": "def"}
+    assert entry.which("def", keys) == "apim" and entry.which("", keys) is None and entry.which("ab", keys) is None
