@@ -482,6 +482,21 @@ var apps = [
     secrets: ['vendor-lookup-key', 'signin-client-secret', 'console-entry-key']
     volumes: []
   }
+  {
+    // Phase 11b-3: reads scanned invoices. Tesseract runs under Landlock (app/jail.py); if this
+    // kernel has no Landlock the service says so at /health and refuses images, rather than
+    // reading them unsandboxed. Container Apps has no network-less or read-only mode, so here
+    // the jail's own rules (no filesystem beyond the job, no TCP on Landlock ABI 4+) carry it.
+    name: 'warden-ocr'
+    image: 'warden-ocr'
+    port: 8000
+    external: false
+    cpu: '0.5'
+    memory: '1Gi'
+    workloadIdentity: ''
+    secrets: []
+    volumes: []
+  }
 ]
 
 // Each app's settings, in the same order as apps.
@@ -526,6 +541,7 @@ var appEnv = [
     { name: 'LEDGER_URL', value: 'http://warden-ledger' }
     { name: 'POLICY_URL', value: 'http://warden-policy' }
     { name: 'PII_URL', value: 'http://warden-pii' }
+    { name: 'OCR_URL', value: 'http://warden-ocr' }
     { name: 'CONTROL_URL', value: 'http://warden-control' }
     { name: 'LEDGER_AUTH', value: 'entra' }
     { name: 'LEDGER_AUDIENCE', value: 'api://${ledgerAppId}' }
@@ -558,6 +574,9 @@ var appEnv = [
     { name: 'OIDC_SCOPE', value: 'openid profile offline_access api://${signInAppId}/access' }
     { name: 'OIDC_AUDIENCE', value: signInAppId }
     { name: 'OIDC_ROLES_CLAIM', value: 'roles' }
+  ]
+  [
+    { name: 'OCR_WORK_DIR', value: '/tmp' } // each image gets its own folder here; the jail sees only that one
   ]
 ]
 

@@ -34,7 +34,7 @@ def main() -> int:
         open("/srv/root-fs-check", "w")
         print("Container root filesystem: writable")
     except OSError as e:
-        print(f"Container root filesystem: read-only ({e.strerror})")
+        print(f"Container root filesystem: not writable by this user ({e.strerror})")
     if not abi:
         print("The jail can't be applied here, so the service refuses to read images.")
         return 1

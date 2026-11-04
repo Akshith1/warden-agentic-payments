@@ -372,7 +372,7 @@ The same core payment path runs on Azure, from one script, sized for a free acco
 | The hash chain alone | Plus a write-once copy (phase 11b): every entry also goes to Blob storage under an immutability policy, and the Audit log page checks the database against it |
 | Outside systems call the backend on the Docker network | API Management (Consumption) in front of the backend (phase 11b-2): a subscription key, an Entra ID token with the submitter role, a rate limit and a daily quota |
 
-Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, and API Management. Not yet: OCR (paste text instead of images), data quality and observability (11b-3). MLflow stays local: the bundled extraction prompt is used on Azure.
+Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, API Management, and OCR for scanned invoices. Not yet: data quality and observability. MLflow stays local: the bundled extraction prompt is used on Azure.
 
 ### Deploy
 
@@ -397,6 +397,14 @@ az containerapp exec -n warden-control -g warden-rg --command "python -m app.tam
 ```
 
 The console's Audit log page still says **Chain verified**: the fingerprints are consistent again. Below it, it says **This log no longer matches its write-once copy: entry 3 differs** and marks entry 3 onwards. The copy in Blob storage couldn't have changed, so the database must have. (Locally, without the copy, `python -m app.tamper --seq 3` without `--rechain` is scenario 15: the chain catches a careless edit.)
+
+### Scanned invoices on Azure
+
+OCR runs as its own app, `warden-ocr`, and each image is read by Tesseract inside the same Landlock jail as locally: it can read only that image's folder and the system libraries, write nothing, and (Landlock ABI 4 and later) open no network connection. Container Apps has no equivalent of Compose's network-less, read-only container, so on Azure the jail is the whole sandbox. Whether this Azure kernel offers Landlock is checked, not assumed: if it doesn't, OCR's health reports `unsandboxed` and it refuses images instead of reading them unsandboxed. To see which, and what the jail refuses:
+
+```powershell
+az containerapp exec -n warden-ocr -g warden-rg --command "python -m app.selftest"
+```
 
 ### The API for outside systems
 

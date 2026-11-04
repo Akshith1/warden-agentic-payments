@@ -18,7 +18,7 @@ pwsh -NoProfile -File infra/azure/deploy.ps1 -Yes
 grep -q '"signInClientSecret"' .azure-warden.json
 grep -q '"intakeClientSecret"' .azure-warden.json
 grep -q '"entryKeyGateway"' .azure-warden.json
-test "$(grep -c '^docker push' "$FAKE_AZ_DIR/docker.log")" -eq 8          # 10 builds, the 2 bases stay local
+test "$(grep -c '^docker push' "$FAKE_AZ_DIR/docker.log")" -eq 9          # 11 builds, the 2 bases stay local
 python3 - "$FAKE_AZ_DIR" <<'PY'
 import json, sys
 d = sys.argv[1]
