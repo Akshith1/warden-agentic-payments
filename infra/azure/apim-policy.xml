@@ -1,12 +1,11 @@
 <!-- Phase 11b-2: the Warden invoices API in API Management. __TENANT__ and __APP__ are filled in
-     by main.bicep. Rate limit first, so a flood of bad tokens is cut off cheaply; then the token:
-     signed by Entra ID for the Warden app, with the submitter role; then the front-door key the
-     backend checks, from a secret named value. The backend checks the token again itself. -->
+     by main.bicep. The rate limit and quota come first, from the product (apim-product-policy.xml);
+     then the token: signed by Entra ID for the Warden app, with the submitter role; then the
+     front-door key the backend checks, from a secret named value. The backend checks the token
+     again itself. -->
 <policies>
   <inbound>
     <base />
-    <rate-limit calls="10" renewal-period="60" />
-    <quota calls="500" renewal-period="86400" />
     <validate-azure-ad-token tenant-id="__TENANT__" header-name="Authorization" failed-validation-httpcode="401"
                              failed-validation-error-message="Send an Entra ID token for Warden with the submitter role">
       <audiences>

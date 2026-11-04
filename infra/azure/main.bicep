@@ -363,6 +363,12 @@ resource intakeProduct 'Microsoft.ApiManagement/service/products@2022-08-01' = {
   }
 }
 
+resource intakeProductPolicy 'Microsoft.ApiManagement/service/products/policies@2022-08-01' = {
+  parent: intakeProduct
+  name: 'policy'
+  properties: { format: 'rawxml', value: loadTextContent('apim-product-policy.xml') }
+}
+
 resource intakeProductApi 'Microsoft.ApiManagement/service/products/apis@2022-08-01' = {
   parent: intakeProduct
   name: apimApi.name

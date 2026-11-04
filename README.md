@@ -400,7 +400,7 @@ The console's Audit log page still says **Chain verified**: the fingerprints are
 
 ### The API for outside systems
 
-An outside system submits invoices through API Management at `https://<warden-apim-…>.azure-api.net/warden`: `POST /runs` with `{"invoice_text": "..."}`, then `GET /runs/{run_id}`. It needs a subscription key (the "Invoice intake" product) and an Entra ID token with the `submitter` role; [`apim-policy.xml`](infra/azure/apim-policy.xml) checks both, then allows 10 calls a minute and 500 a day per subscription. The deploy registers a stand-in outside system, the "Warden intake" app, which signs in as itself with the submitter role only. To play it:
+An outside system submits invoices through API Management at `https://<warden-apim-…>.azure-api.net/warden`: `POST /runs` with `{"invoice_text": "..."}`, then `GET /runs/{run_id}`. It needs a subscription key (the "Invoice intake" product) and an Entra ID token with the `submitter` role; [`apim-policy.xml`](infra/azure/apim-policy.xml) checks both, and the product ([`apim-product-policy.xml`](infra/azure/apim-product-policy.xml)) allows 10 calls a minute and 500 a day per subscription. The deploy registers a stand-in outside system, the "Warden intake" app, which signs in as itself with the submitter role only. To play it:
 
 ```powershell
 .\infra\azure\try-api.ps1
