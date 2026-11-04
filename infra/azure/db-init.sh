@@ -5,7 +5,7 @@
 # service, as locally. Idempotent: it also resets each role's password to the one in Key Vault,
 # so a rotated secret takes effect on the next deploy.
 #
-# The admin of a Flexible Server is not a superuser. It may create roles, and gets the right
+# The admin of a Flexible Server is not a superuser (it is a member of azure_pg_admin). It may create roles, and gets the right
 # to grant each role it creates; it grants the role to itself so it may make it a database owner.
 set -eu
 
@@ -21,6 +21,9 @@ SELECT format('CREATE DATABASE %I OWNER %I', '$role', '$role')
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$role') \gexec
 REVOKE ALL ON DATABASE $role FROM PUBLIC;
 SQL
+  # On Flexible Server the public schema of a new database belongs to azure_pg_admin, not to
+  # the database's owner, so the service couldn't create its tables. Give it the schema.
+  psql -v ON_ERROR_STOP=1 --dbname "$role" -c "ALTER SCHEMA public OWNER TO $role"
   echo "ready: database and role $role"
 }
 
