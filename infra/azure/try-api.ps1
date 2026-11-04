@@ -99,13 +99,18 @@ Check "4. Key and token, through the gateway" $submitted @(202)
 if ($submitted.status -eq 202) {
     $runId = ($submitted.body | ConvertFrom-Json).run_id
     Write-Host ("{0,-44} invoice {1}, run {2}" -f "", $number, $runId)
-    $status = "submitted"
+    $status = "submitted"; $reason = ""
     for ($i = 0; $i -lt 36 -and $status -in @("submitted", "extracted", "scored", "approved", "settling", "resuming", "retrying"); $i++) {
         Start-Sleep -Seconds 5
         $seen = Send GET "$gateway/runs/$runId" ($keyed + $auth)
-        if ($seen.status -eq 200) { $status = ($seen.body | ConvertFrom-Json).status }
+        if ($seen.status -eq 200) {
+            $run = $seen.body | ConvertFrom-Json     # { run: the service's row, state: the graph's values, ... }
+            $status = if ($run.state.status) { $run.state.status } else { $run.run.status }
+            $reason = $run.state.status_reason
+        }
     }
-    Write-Host ("{0,-44} {1}" -f "5. The run, through the gateway", $status)
+    $why = if ($reason) { "  ($reason)" } else { "" }
+    Write-Host ("{0,-44} {1}{2}" -f "5. The run, through the gateway", $status, $why)
 }
 
 $codes = @()
