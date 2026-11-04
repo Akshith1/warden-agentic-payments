@@ -30,6 +30,7 @@ _lock = threading.Lock()
 def targets() -> dict[str, str]:
     return {"ledger": f"{config.LEDGER_URL}/health", "policy": f"{config.POLICY_URL}/health",
             "control": f"{config.CONTROL_URL}/health", "pii": f"{config.PII_URL}/health",
+            "ocr": f"{config.OCR_URL}/health",
             "gateway": f"{config.LITELLM_URL}/health/liveliness"}
 
 

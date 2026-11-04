@@ -96,9 +96,9 @@ def test_wake_asks_every_dependency_once_then_trusts_it_for_a_while(monkeypatch)
     monkeypatch.setattr(wake, "_last", None)
     asked = []
     result = wake.wake(get=asked.append)
-    assert set(result) == {"ledger", "policy", "control", "pii", "gateway"} and set(result.values()) == {"up"}
+    assert set(result) == {"ledger", "policy", "control", "pii", "gateway", "ocr"} and set(result.values()) == {"up"}
     assert f"{config.CONTROL_URL}/health" in asked and f"{config.LITELLM_URL}/health/liveliness" in asked
-    assert wake.wake(get=asked.append) == {} and len(asked) == 5                        # fresh: skipped
+    assert wake.wake(get=asked.append) == {} and len(asked) == 6                        # fresh: skipped
 
 
 def test_wake_reports_a_dependency_that_stays_down_and_tries_again_next_time(monkeypatch):

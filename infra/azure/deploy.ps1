@@ -353,6 +353,7 @@ if ($SkipImages) {
     $images = @(
         @{ name = "warden-ledger"; context = "warden-ledger" },
         @{ name = "warden-pii"; context = "warden-pii" },
+        @{ name = "warden-ocr"; context = "warden-ocr" },
         @{ name = "warden-backend"; context = "warden-backend" },
         @{ name = "warden-gateway"; context = "infra/litellm" },
         @{ name = "warden-console"; context = "warden-console" },
