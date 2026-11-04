@@ -40,6 +40,9 @@ if grep -E 'rest --method POST' "$FAKE_AZ_DIR/calls.log"; then echo "a second de
 echo "--- teardown"
 pwsh -NoProfile -File infra/azure/teardown.ps1 -Yes
 test ! -e .azure-warden.json
+grep -q '^storage container immutability-policy delete' "$FAKE_AZ_DIR/calls.log"
+test "$(grep -n '^storage container immutability-policy delete' "$FAKE_AZ_DIR/calls.log" | cut -d: -f1)" -lt \
+     "$(grep -n '^group delete' "$FAKE_AZ_DIR/calls.log" | cut -d: -f1)"     # the policy goes first
 grep -q '^group delete -n warden-rg --yes' "$FAKE_AZ_DIR/calls.log"
 grep -q '^keyvault purge' "$FAKE_AZ_DIR/calls.log"
 echo "dry run passed"

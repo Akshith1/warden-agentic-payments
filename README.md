@@ -369,8 +369,9 @@ The same core payment path runs on Azure, from one script, sized for a free acco
 | `.env` | Key Vault: the apps read their secrets through a managed identity; nothing secret is in an app's settings |
 | Postgres in a container | Azure Database for PostgreSQL (Flexible Server, B1ms, 32 GB), TLS required |
 | The audit log in a SQLite volume | The control plane's own Postgres database (a container on Azure has no lasting disk). Append-only triggers and the hash chain as before |
+| The hash chain alone | Plus a write-once copy (phase 11b): every entry also goes to Blob storage under an immutability policy, and the Audit log page checks the database against it |
 
-Deployed: the console, backend, ledger, policy, control plane, personal-data masking and the model gateway. Not yet: OCR (paste text instead of images), data quality, MLflow (the bundled extraction prompt is used), observability. Phase 11b adds those, API Management in front of the backend, and a write-once (WORM) copy of the audit log in Blob storage.
+Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, and the write-once audit copy. Not yet: API Management in front of the backend (11b-2); OCR (paste text instead of images), data quality and observability (11b-3). MLflow stays local: the bundled extraction prompt is used on Azure.
 
 ### Deploy
 
@@ -385,6 +386,16 @@ It asks before creating anything. It sets up Entra ID (the two app registrations
 Values generated for Azure (Postgres admin password, the gateway's agent keys, the sign-in secret) are kept in `.azure-warden.json`, gitignored, beside `.env`.
 
 **The first page after a quiet spell takes 20-60 seconds**: every app is asleep. The backend wakes the services a run needs before its first step (`WAKE_DEPENDENCIES`), so a run doesn't fail on a sleeping service.
+
+### Scenario 28: a rewritten history
+
+With a few runs on Azure, rewrite entry 3 and recompute every fingerprint after it, as a careful insider with the database would:
+
+```powershell
+az containerapp exec -n warden-control -g warden-rg --command "python -m app.tamper --seq 3 --rechain"
+```
+
+The console's Audit log page still says **Chain verified**: the fingerprints are consistent again. Below it, it says **This log no longer matches its write-once copy: entry 3 differs** and marks entry 3 onwards. The copy in Blob storage couldn't have changed, so the database must have. (Locally, without the copy, `python -m app.tamper --seq 3` without `--rechain` is scenario 15: the chain catches a careless edit.)
 
 ### Remove it
 
@@ -413,6 +424,7 @@ So about $5 a month, idle or with occasional demos, plus what the model provider
 - **Only the console is reachable from the internet**, over HTTPS. The other apps take requests only from inside the Container Apps environment, by name (`http://warden-ledger`).
 - **The ledger checks every token itself**: Entra ID's signature, the tenant, the audience (the "Warden ledger" app), expiry, and then which managed identity is calling. Only the backend's may write; the policy service's may read. A person's token is refused, because it names the console, not a workload ([`warden-ledger/app/auth.py`](warden-ledger/app/auth.py)).
 - **The console, backend and control plane check people's Entra ID tokens** with the same code as Keycloak's: only the issuer, keys, audience and the claim holding roles (`roles` instead of `realm_access.roles`) differ, set by `OIDC_*` and `ROLES_CLAIM`.
+- **The audit log has a copy nobody can rewrite.** The hash chain shows an edit only until someone with the database recomputes the chain from the edit onwards. So the control plane also copies every entry, a few seconds after it is written, to an append blob in a container with a time-based immutability policy: blobs there can be added to but never changed or deleted, by anyone, until the retention period ends (`auditRetentionDays`, one day by default). The control plane writes with its own managed identity, the only one with access; the account takes no keys. The Audit log page compares the database with the copy entry by entry ([`warden-control/app/worm.py`](warden-control/app/worm.py)). The policy is left unlocked so `teardown.ps1` can remove it; a locked policy can't be removed or shortened by anyone, including the subscription's owner.
 - **Postgres accepts connections only from Azure** (its "Allow Azure services" rule), over TLS, with a password per service. Phase 11b can move it onto a private network.
 
 ## Rotating secrets
@@ -697,7 +709,7 @@ These are deliberate and each one is removed by a named later phase.
 - **The ledger's write key and the gateway key are still in `.env`.** Phase 6b moves them into a secrets vault (Infisical), fetched fresh before each use, and gives each service its own workload identity (SPIRE).
 - **Only the Extraction prompt is registry-managed.** It is the one the gate can score against labels. The Risk, Approval and Critic prompts are versioned in git; scoring them needs labelled fraud decisions, which no public dataset here provides.
 - **A promoted prompt takes effect on restart**, not live, matching how the backend loads it once at startup.
-- **The audit log is a SQLite file in a Docker volume.** The hash chain makes edits evident but can't stop someone deleting the whole file. The Azure profile (phase 11) writes it to Blob storage with an immutability policy, which can't be deleted for the retention period.
+- **The audit log is a SQLite file in a Docker volume.** The hash chain makes edits evident but can't stop someone deleting the whole file, or rewriting it and recomputing the chain. The Azure profile (phase 11b) also copies every entry to Blob storage under an immutability policy, and checks the database against the copy.
 - **Any service on the Docker network can append to the audit log.** It can't change past entries. Phase 6b's workload identities limit who may write.
 - **The guardrail blocks; it doesn't ask.** A legitimate invoice that happens to say "pre-approved" is blocked, and the sender has to resubmit without it. That is the safer failure for a payments system. The rules' wording is tested against ordinary receipt text in `tests/test_guardrail.py`.
 - **The guardrail model isn't scored by the evaluation gate yet.** The gate scores extraction against labelled receipts. Scoring the guardrail needs a labelled set of injected and clean documents, which can come from the live runs.
@@ -721,7 +733,7 @@ These are deliberate and each one is removed by a named later phase.
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry traces, metrics and step logs in Grafana; agent consistency check (done). Langfuse | 24-27 |
 | 10 | GitHub Actions: policies, every test suite, console build, Compose and secret checks (done) | CI |
-| 11 | Azure profile: Container Apps, Entra ID sign-in and managed identities, Key Vault (11a, done). APIM, Blob WORM audit copy, OCR, data quality and monitoring (11b) | 28-31 |
+| 11 | Azure profile: Container Apps, Entra ID sign-in and managed identities, Key Vault (11a, done); write-once audit copy in Blob storage (11b-1). APIM (11b-2); OCR, data quality and monitoring (11b-3) | 28-31 |
 
 ## Data sources
 

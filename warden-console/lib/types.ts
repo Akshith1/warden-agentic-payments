@@ -81,3 +81,9 @@ export type AuditEntry = {
 };
 
 export type ChainCheck = { valid: boolean; entries: number; head?: string; broken_at?: number; problem?: string };
+
+// Phase 11b: the audit log checked against its write-once copy in Azure Blob storage.
+export type WormCheck =
+  | { enabled: false }
+  | { enabled: true; matches: boolean; copied_through: number; database_through: number; copies: number;
+      first_difference: number | null; problem: string | null; last_copy_error: string | null };

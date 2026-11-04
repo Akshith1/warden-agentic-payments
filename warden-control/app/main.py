@@ -17,13 +17,14 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from . import config
+from . import config, worm
 from .auth import User, require
 from .store import Store
 
 
 class State:
     store: Store
+    copier: "worm.Copier | None" = None
 
 
 state = State()
@@ -32,7 +33,12 @@ state = State()
 @asynccontextmanager
 async def lifespan(_app):
     state.store = Store(config.CONTROL_DB)
+    # Phase 11b: on Azure, every entry is also copied to write-once Blob storage.
+    state.copier, stop = worm.start(state.store)
+    if state.copier:
+        state.store.on_append.append(state.copier.wake.set)
     yield
+    stop.set()
 
 
 app = FastAPI(title="warden-control", lifespan=lifespan)
@@ -143,6 +149,17 @@ def watch(event: Event) -> None:
 @app.get("/audit", dependencies=[Depends(ANYONE)])
 def audit(limit: int = 100, run_id: str | None = None):
     return state.store.entries(min(limit, 1000), run_id)
+
+
+@app.get("/audit/worm", dependencies=[Depends(ANYONE)])
+def audit_worm():
+    """Phase 11b: the database checked against the write-once copy in Blob storage."""
+    if state.copier is None:
+        return {"enabled": False}
+    try:
+        return {"enabled": True, "last_copy_error": state.copier.last_error} | state.copier.compare()
+    except Exception as exc:  # noqa: BLE001 - reported to the person asking
+        raise HTTPException(status_code=502, detail=f"can't read the write-once copy: {type(exc).__name__}") from exc
 
 
 @app.get("/audit/verify", dependencies=[Depends(ANYONE)])

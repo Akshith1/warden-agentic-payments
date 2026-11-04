@@ -65,7 +65,7 @@ param signInClientSecret string
 param agentKeysJson string
 
 var suffix = uniqueString(resourceGroup().id)
-var tags = { project: 'warden', phase: '11a' }
+var tags = { project: 'warden', phase: '11' }
 
 // ---------------------------------------------------------------- logs
 resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -113,8 +113,16 @@ resource policyIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-0
   tags: tags
 }
 
+// Phase 11b: the control plane's own identity, the only one allowed to add to the audit copy.
+resource controlIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${prefix}-control-id'
+  location: location
+  tags: tags
+}
+
 var acrPullRole = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 var keyVaultSecretsUserRole = '4633458b-17de-408a-b874-0445c86b69e6'
+var blobDataContributorRole = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 
 resource pull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(registry.id, appsIdentity.id, acrPullRole)
@@ -169,6 +177,62 @@ resource secrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [for s in item
   name: s.key
   properties: { value: s.value }
 }]
+
+// ---------------------------------------------------------------- write-once audit copy (phase 11b)
+// The control plane copies every audit entry here. A time-based immutability policy with
+// protected append writes: blobs can be created and added to, never changed, overwritten or
+// deleted, until the retention period ends. The policy is left unlocked, so it can be removed
+// (teardown.ps1 does, to delete everything); a locked one could not be removed or shortened by
+// anyone, and would keep the account until the last blob's retention ended.
+@description('Days each audit copy blob is kept write-once.')
+param auditRetentionDays int = 1
+
+resource auditStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: '${prefix}audit${take(suffix, 8)}'
+  location: location
+  tags: union(tags, { purpose: 'audit' })
+  sku: { name: 'Standard_LRS' }
+  kind: 'StorageV2'
+  properties: {
+    accessTier: 'Hot'
+    allowSharedKeyAccess: false // identities only: no account key can write here
+    allowBlobPublicAccess: false
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+resource auditBlobs 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: auditStorage
+  name: 'default'
+}
+
+resource auditContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: auditBlobs
+  name: 'audit'
+  properties: { publicAccess: 'None' }
+}
+
+resource auditWriteOnce 'Microsoft.Storage/storageAccounts/blobServices/containers/immutabilityPolicies@2023-05-01' = {
+  parent: auditContainer
+  name: 'default'
+  properties: {
+    immutabilityPeriodSinceCreationInDays: auditRetentionDays
+    allowProtectedAppendWrites: true
+  }
+}
+
+resource copyAudit 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(auditContainer.id, controlIdentity.id, blobDataContributorRole)
+  scope: auditContainer
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobDataContributorRole)
+    principalId: controlIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+var auditCopyUrl = '${auditStorage.properties.primaryEndpoints.blob}audit'
 
 // ---------------------------------------------------------------- Postgres
 resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
@@ -256,7 +320,7 @@ var apps = [
     external: false
     cpu: '0.25'
     memory: '0.5Gi'
-    workloadIdentity: ''
+    workloadIdentity: controlIdentity.id
     secrets: ['control-db-url']
     volumes: []
   }
@@ -333,6 +397,8 @@ var appEnv = [
   concat(noTelemetry, userSignIn, [
     { name: 'CONTROL_DB', secretRef: 'control-db-url' }
     { name: 'CANARY_VENDORS', value: 'CANARY-DO-NOT-PAY' }
+    { name: 'AUDIT_WORM_URL', value: auditCopyUrl }
+    { name: 'AZURE_CLIENT_ID', value: controlIdentity.properties.clientId }
   ])
   concat(noTelemetry, [
     { name: 'CONTROL_URL', value: 'http://warden-control' }
@@ -394,7 +460,7 @@ resource containerApps 'Microsoft.App/containerApps@2024-03-01' = [for (app, i) 
   name: app.name
   location: location
   tags: tags
-  dependsOn: [pull, readSecrets, secrets]
+  dependsOn: [pull, readSecrets, secrets, copyAudit, auditWriteOnce]
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: union({ '${appsIdentity.id}': {} }, empty(app.workloadIdentity) ? {} : { '${app.workloadIdentity}': {} })
@@ -481,3 +547,5 @@ output environmentDomain string = env.properties.defaultDomain
 output consoleUrl string = consoleUrl
 output backendIdentityClientId string = backendIdentity.properties.clientId
 output policyIdentityClientId string = policyIdentity.properties.clientId
+output auditStorageName string = auditStorage.name
+output auditCopyUrl string = auditCopyUrl

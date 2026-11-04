@@ -178,6 +178,7 @@ class Store:
     def __init__(self, path: str):
         self.db = _Postgres(path) if path.startswith(("postgresql://", "postgres://")) else _Sqlite(path)
         self.lock = threading.Lock()
+        self.on_append: list = []   # phase 11b: the write-once copier is told of each new entry
 
     def close(self) -> None:
         self.db.close()
@@ -191,6 +192,8 @@ class Store:
             at = now()
             h = entry_hash(prev, seq, at, type_, run_id, actor, text)
             db.execute("INSERT INTO audit VALUES (?,?,?,?,?,?,?,?)", (seq, at, type_, run_id, actor, text, prev, h))
+        for notify in self.on_append:
+            notify()
         return {"seq": seq, "hash": h}
 
     def entries(self, limit: int = 100, run_id: str | None = None) -> list[dict]:

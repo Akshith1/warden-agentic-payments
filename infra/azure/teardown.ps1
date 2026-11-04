@@ -5,7 +5,7 @@ Phase 11: removes everything deploy.ps1 created, so nothing is left to bill.
     .\infra\azure\teardown.ps1 -KeepSignIn   # keep the Entra ID apps and test people (they cost nothing)
 
 It deletes the resource group (every app, Postgres and its data, the registry, the logs,
-Key Vault), purges Key Vault so its name can be used again, and by default removes the two
+Key Vault, the write-once audit copy, after removing its unlocked policy), purges Key Vault so its name can be used again, and by default removes the two
 app registrations and the two test people, and .azure-warden.json. Takes 5-15 minutes.
 The audit log and ledger on Azure are deleted with Postgres; the local stack is untouched.
 #>
@@ -38,6 +38,18 @@ if (-not $Yes) {
 }
 
 if ((Invoke-Az group exists -n $ResourceGroup) -eq "true") {
+    # Phase 11b: the audit copy's write-once policy is unlocked, so it can be removed; without it
+    # the container and its blobs can be deleted with everything else.
+    $accounts = Invoke-Az storage account list -g $ResourceGroup --query "[?tags.purpose=='audit'].name" -o tsv
+    foreach ($account in @($accounts | Where-Object { $_ })) {
+        $etag = Invoke-Az storage container immutability-policy show -g $ResourceGroup --account-name $account `
+            --container-name audit --query etag -o tsv
+        if ($etag) {
+            Write-Host "Removing the write-once policy on $account/audit"
+            Invoke-Az storage container immutability-policy delete -g $ResourceGroup --account-name $account `
+                --container-name audit --if-match $etag | Out-Null
+        }
+    }
     Write-Host "Deleting $ResourceGroup (5-15 minutes)..."
     Invoke-Az group delete -n $ResourceGroup --yes | Out-Null
 } else {
