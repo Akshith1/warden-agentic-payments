@@ -203,12 +203,17 @@ jobs:
         env: { PGHOST: localhost, PGPASSWORD: ci-postgres, PGUSER: postgres }
         run: |
           psql -qc "CREATE ROLE wardenadmin LOGIN CREATEROLE CREATEDB PASSWORD 'ci-admin'"
+          # As on Flexible Server: new databases' public schema belongs to azure_pg_admin, not their owner.
+          psql -qc "CREATE ROLE azure_pg_admin NOLOGIN" -c "GRANT azure_pg_admin TO wardenadmin"
+          psql -d template1 -qc "ALTER SCHEMA public OWNER TO azure_pg_admin" -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC"
           for password in first second; do
             PGUSER=wardenadmin PGPASSWORD=ci-admin PGPASS_WARDEN_LEDGER=l-$password \
               PGPASS_WARDEN_BACKEND=b-$password PGPASS_WARDEN_CONTROL=c-$password sh infra/azure/db-init.sh
           done
           # The second run's passwords are the ones that work, and each role reaches only its own database.
-          PGUSER=warden_control PGPASSWORD=c-second psql -d warden_control -tAc "CREATE TABLE t (x int)"
+          for r in ledger backend control; do
+            PGUSER=warden_$r PGPASSWORD=${r:0:1}-second psql -d warden_$r -tAc "CREATE TABLE t (x int)"
+          done
           if PGUSER=warden_control PGPASSWORD=c-second psql -d warden_ledger -tAc "SELECT 1"; then exit 1; fi
 
   console:
