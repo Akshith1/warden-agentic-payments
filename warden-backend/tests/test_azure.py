@@ -93,7 +93,7 @@ def test_a_managed_identity_token_is_asked_for_the_ledger_and_reused(monkeypatch
 # ---- waking sleeping services
 
 def test_wake_asks_every_dependency_once_then_trusts_it_for_a_while(monkeypatch):
-    monkeypatch.setattr(wake, "_last", 0.0)
+    monkeypatch.setattr(wake, "_last", None)
     asked = []
     result = wake.wake(get=asked.append)
     assert set(result) == {"ledger", "policy", "control", "pii", "gateway"} and set(result.values()) == {"up"}
@@ -102,7 +102,7 @@ def test_wake_asks_every_dependency_once_then_trusts_it_for_a_while(monkeypatch)
 
 
 def test_wake_reports_a_dependency_that_stays_down_and_tries_again_next_time(monkeypatch):
-    monkeypatch.setattr(wake, "_last", 0.0)
+    monkeypatch.setattr(wake, "_last", None)
 
     def get(url):
         if "/health/liveliness" in url:
@@ -113,6 +113,6 @@ def test_wake_reports_a_dependency_that_stays_down_and_tries_again_next_time(mon
 
 
 def test_wake_is_off_unless_configured(monkeypatch):
-    monkeypatch.setattr(wake, "_last", 0.0)
+    monkeypatch.setattr(wake, "_last", None)
     monkeypatch.setattr(wake, "ENABLED", False)
     assert wake.wake() == {}
