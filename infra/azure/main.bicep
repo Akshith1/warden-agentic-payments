@@ -713,7 +713,9 @@ resource dataLoader 'Microsoft.App/jobs@2024-03-01' = if (deployApps) {
         {
           name: 'data-loader'
           image: '${registryServer}/warden-data-loader:${imageTag}'
-          resources: { cpu: json('1'), memory: '2Gi' }
+          // The first live run was killed at 2 GB (exit 137); it reads only text now, and 4 GB
+          // leaves room. It runs once, for minutes, so the size barely costs anything.
+          resources: { cpu: json('2'), memory: '4Gi' }
           env: [
             { name: 'POSTGRES_HOST', value: postgresHost }
             { name: 'PGPASS_WARDEN_LEDGER', secretRef: 'pg-ledger-password' }
