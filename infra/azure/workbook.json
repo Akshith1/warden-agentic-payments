@@ -116,7 +116,7 @@
       "content": {
         "version": "KqlItem/1.0",
         "title": "Model tokens by agent",
-        "query": "customMetrics\n| where name == \"warden.llm.tokens\"\n| extend agent = tostring(customDimensions.agent), kind = tostring(customDimensions.kind)\n| summarize tokens = sum(valueSum) by agent, kind\n| order by tokens desc",
+        "query": "customMetrics\n| where name == \"warden.llm.tokens\"\n| extend agent = tostring(customDimensions.agent), token_kind = tostring(customDimensions.kind)\n| summarize tokens = sum(valueSum) by agent, token_kind\n| order by tokens desc",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.insights/components",
@@ -234,7 +234,7 @@
       "content": {
         "version": "KqlItem/1.0",
         "title": "The backend's step log",
-        "query": "traces\n| where cloud_RoleName == \"warden-backend\"\n| project timestamp, message\n| order by timestamp desc\n| take 50",
+        "query": "traces\n| where cloud_RoleName endswith \"warden-backend\"\n| project timestamp, message\n| order by timestamp desc\n| take 50",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.insights/components",

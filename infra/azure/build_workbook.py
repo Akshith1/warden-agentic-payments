@@ -8,7 +8,9 @@ customDimensions. Azure Monitor sends a counter as the amount added in each
 export interval (valueSum), and a histogram as its sum, count, min and max per
 interval: no buckets, so these panels show averages and maxima where Grafana
 shows percentiles. Requests and calls between services arrive in requests and
-dependencies, under each service's name (cloud_RoleName)."""
+dependencies, under each service's name (cloud_RoleName), which Azure Monitor
+prefixes with the namespace: "warden.warden-backend". ("kind" is a reserved word
+in KQL, so the token kind is token_kind.)"""
 import json
 from pathlib import Path
 
@@ -59,8 +61,8 @@ ITEMS = [
             steps = sum(valueCount) by step
 | order by average desc"""),
     query("Model tokens by agent", metric("warden.llm.tokens") + """
-| extend agent = tostring(customDimensions.agent), kind = tostring(customDimensions.kind)
-| summarize tokens = sum(valueSum) by agent, kind
+| extend agent = tostring(customDimensions.agent), token_kind = tostring(customDimensions.kind)
+| summarize tokens = sum(valueSum) by agent, token_kind
 | order by tokens desc""", "barchart"),
     query("Time per model call (seconds)", metric("warden.llm.duration") + """
 | extend agent = tostring(customDimensions.agent), route = tostring(customDimensions.route)
@@ -100,7 +102,7 @@ requests
 | take 50""", width="100"),
     query("The backend's step log", """
 traces
-| where cloud_RoleName == "warden-backend"
+| where cloud_RoleName endswith "warden-backend"
 | project timestamp, message
 | order by timestamp desc
 | take 50""", width="100"),
