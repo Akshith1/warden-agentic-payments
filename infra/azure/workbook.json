@@ -1,0 +1,250 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Warden\nRuns, agents, models and services, from Application Insights. The same questions as the local Grafana dashboard; histograms show averages and maxima here (Azure Monitor sends no buckets)."
+      }
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "time-range",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 604800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Runs"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Runs by outcome",
+        "query": "customMetrics\n| where name == \"warden.runs\"\n| extend outcome = tostring(customDimensions.outcome)\n| summarize runs = sum(valueSum) by outcome\n| order by runs desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "barchart"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Why runs went to a person",
+        "query": "customMetrics\n| where name == \"warden.escalations\"\n| extend reason = tostring(customDimensions.kind)\n| summarize escalations = sum(valueSum) by reason\n| order by escalations desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "barchart"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "100",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Runs over time",
+        "query": "customMetrics\n| where name == \"warden.runs\"\n| extend outcome = tostring(customDimensions.outcome)\n| summarize runs = sum(valueSum) by bin(timestamp, 1h), outcome",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "timechart"
+      }
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Agents and models"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Time per graph step (seconds)",
+        "query": "customMetrics\n| where name == \"warden.agent.duration\"\n| extend step = tostring(customDimensions.step)\n| summarize average = round(sum(valueSum) / sum(valueCount), 2), slowest = round(max(valueMax), 2),\n            steps = sum(valueCount) by step\n| order by average desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Model tokens by agent",
+        "query": "customMetrics\n| where name == \"warden.llm.tokens\"\n| extend agent = tostring(customDimensions.agent), kind = tostring(customDimensions.kind)\n| summarize tokens = sum(valueSum) by agent, kind\n| order by tokens desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "barchart"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Time per model call (seconds)",
+        "query": "customMetrics\n| where name == \"warden.llm.duration\"\n| extend agent = tostring(customDimensions.agent), route = tostring(customDimensions.route)\n| summarize average = round(sum(valueSum) / sum(valueCount), 2), slowest = round(max(valueMax), 2),\n            calls = sum(valueCount) by agent, route\n| order by average desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Risk scores the risk agent gave",
+        "query": "customMetrics\n| where name == \"warden.risk.score\"\n| extend route = tostring(customDimensions.route)\n| summarize average = round(sum(valueSum) / sum(valueCount), 2), lowest = round(min(valueMin), 2),\n            highest = round(max(valueMax), 2), scored = sum(valueCount) by route",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Policy decisions",
+        "query": "customMetrics\n| where name == \"warden.policy.decisions\"\n| extend decision = tostring(customDimensions.decision), principal = tostring(customDimensions.principal)\n| summarize decisions = sum(valueSum) by decision, principal\n| order by decisions desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Consistency: spread of repeated scores",
+        "query": "customMetrics\n| where name == \"warden.consistency.spread\"\n| extend agent = tostring(customDimensions.agent)\n| summarize arg_max(timestamp, value) by agent\n| project agent, spread = round(value, 2), measured = timestamp",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Services"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Requests each service served",
+        "query": "requests\n| where name !has \"health\"\n| summarize requests = count(), failed = countif(success == false),\n            average_ms = round(avg(duration), 1), p95_ms = round(percentile(duration, 95), 1) by service = cloud_RoleName\n| order by requests desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "50",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Calls between services",
+        "query": "dependencies\n| summarize calls = count(), failed = countif(success == false), average_ms = round(avg(duration), 1)\n            by from = cloud_RoleName, to = target\n| order by calls desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "100",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Failed requests",
+        "query": "requests\n| where success == false\n| project timestamp, service = cloud_RoleName, name, resultCode, duration, operation_Id\n| order by timestamp desc\n| take 50",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    },
+    {
+      "type": 3,
+      "customWidth": "100",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "The backend's step log",
+        "query": "traces\n| where cloud_RoleName == \"warden-backend\"\n| project timestamp, message\n| order by timestamp desc\n| take 50",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      }
+    }
+  ],
+  "isLocked": false,
+  "fallbackResourceIds": [
+    "Azure Monitor"
+  ]
+}

@@ -13,3 +13,4 @@ opentelemetry-distro==0.66b2
 opentelemetry-exporter-otlp-proto-http==1.45.2
 opentelemetry-instrumentation-fastapi==0.66b2
 opentelemetry-instrumentation-sqlite3==0.66b2
+azure-monitor-opentelemetry-exporter==1.0.0b58  # phase 11c: traces, metrics and logs to Application Insights on Azure

@@ -372,7 +372,7 @@ The same core payment path runs on Azure, from one script, sized for a free acco
 | The hash chain alone | Plus a write-once copy (phase 11b): every entry also goes to Blob storage under an immutability policy, and the Audit log page checks the database against it |
 | Outside systems call the backend on the Docker network | API Management (Consumption) in front of the backend (phase 11b-2): a subscription key, an Entra ID token with the submitter role, a rate limit and a daily quota |
 
-Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, API Management, OCR for scanned invoices, and data quality with the data loader. Not yet: observability. MLflow stays local: the bundled extraction prompt is used on Azure.
+Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, API Management, OCR for scanned invoices, data quality with the data loader, and monitoring in Application Insights. MLflow stays local: the bundled extraction prompt is used on Azure. MLflow stays local: the bundled extraction prompt is used on Azure.
 
 ### Deploy
 
@@ -401,6 +401,12 @@ The console's Audit log page still says **Chain verified**: the fingerprints are
 ### Data and data quality on Azure
 
 The first deploy runs the data loader once, as a Container Apps job (`warden-data-loader`): the same real receipts (SROIE, CORD) into the invoice inbox and public spending data into vendor history as locally, so vendors with enough history can be approved without a person on Azure too. `-LoadData` runs it again. The data-quality service checks the ledger and the inbox with a read-only login, and a critical failure trips the kill switch, as locally. It checks every 10 minutes while awake; since it sleeps when idle, a scheduled job (`warden-quality-schedule`) wakes it every 6 hours for a run. **Check now** on the console's Data quality page works as locally.
+
+### Monitoring on Azure
+
+The services send traces and metrics to Application Insights (`warden-insights`) instead of Grafana: the same OpenTelemetry instrumentation, with Microsoft's exporter chosen by settings (the backend picks it when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set). Its data lives in the Log Analytics workspace, under the same free 5 GB a month and 0.15 GB daily cap, kept 30 days. The exporter's own usage reports to Microsoft are switched off.
+
+In the Azure portal: **warden-rg** → **Warden** (a workbook) for the dashboard: runs by outcome, why runs went to a person, time per step, tokens and time per model call, risk scores, policy decisions, requests and calls between services, failures and the backend's step log. It is built by [`infra/azure/build_workbook.py`](infra/azure/build_workbook.py) from the same questions as the Grafana dashboard; histograms show averages and maxima, since Azure Monitor receives no buckets. **warden-insights** → **Application map** draws the services and the calls between them; **Transaction search** opens one run's trace across services.
 
 ### Scanned invoices on Azure
 
@@ -440,7 +446,7 @@ Approximate pay-as-you-go prices from autumn 2026 (US regions); check the [prici
 | Postgres B1ms, 32 GB | In a free account's 12-month free services (750 hours a month). Otherwise roughly $15-20 a month |
 | Container Registry (Basic) | About $5 a month |
 | Key Vault | A few cents: $0.03 per 10,000 secret reads |
-| Log Analytics | Free up to 5 GB a month; the workspace is capped at 0.15 GB a day |
+| Log Analytics and Application Insights | Free up to 5 GB a month together; the workspace is capped at 0.15 GB a day |
 | API Management (Consumption) | Free for the first million calls a month |
 | Blob storage (audit copy) | A few cents: kilobytes a day |
 
