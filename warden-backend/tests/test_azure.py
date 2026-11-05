@@ -122,3 +122,26 @@ def test_an_app_signing_in_as_itself_is_named_by_its_client_id(entra):
     user = auth.verify(entra_token(preferred_username=None, name=None, idtyp="app", azp="intake-client-id",
                                    roles=["submitter"]))
     assert user.username == "app:intake-client-id" and user.roles == {"submitter"}
+
+
+def test_on_azure_telemetry_goes_to_application_insights():
+    """Phase 11c: with APPLICATIONINSIGHTS_CONNECTION_STRING set, the backend exports traces,
+    metrics and step logs with Azure Monitor's exporters. Run in a fresh process, since
+    OpenTelemetry's providers can only be set once per process."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    probe = (
+        "from opentelemetry import trace, metrics\n"
+        "from app import telemetry\n"
+        "assert telemetry.configure() is True\n"
+        "spans = trace.get_tracer_provider()._active_span_processor._span_processors\n"
+        "print(type(spans[0].span_exporter).__name__)\n"
+        "readers = metrics.get_meter_provider()._metric_readers\n"
+        "print(type(readers[0]._exporter).__name__)\n")
+    env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": "/tmp",
+           "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=00000000-0000-0000-0000-000000000000;"
+           "IngestionEndpoint=https://localhost.invalid/"}
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=env,
+                         cwd=Path(__file__).resolve().parents[1])
+    assert out.stdout.split() == ["AzureMonitorTraceExporter", "AzureMonitorMetricExporter"], out.stderr[-2000:]

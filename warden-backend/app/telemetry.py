@@ -65,7 +65,9 @@ def reason_kind(reason: str) -> str:
 
 def configure(span_exporter=None, metric_readers=None, log_exporter=None) -> bool:
     """Sets up exporters: the ones passed in (tests), else OTLP over HTTP when
-    OTEL_EXPORTER_OTLP_ENDPOINT is set. Returns whether telemetry is on."""
+    OTEL_EXPORTER_OTLP_ENDPOINT is set (locally, Grafana), else Azure Monitor when
+    APPLICATIONINSIGHTS_CONNECTION_STRING is set (phase 11c, on Azure). Returns whether
+    telemetry is on."""
     from opentelemetry._logs import set_logger_provider
     from opentelemetry.instrumentation.logging.handler import LoggingHandler
     from opentelemetry.sdk._logs import LoggerProvider
@@ -76,7 +78,8 @@ def configure(span_exporter=None, metric_readers=None, log_exporter=None) -> boo
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
     otlp = bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
-    if not (otlp or span_exporter or metric_readers or log_exporter):
+    azure = bool(os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"))
+    if not (otlp or azure or span_exporter or metric_readers or log_exporter):
         return False
     resource = Resource.create({"service.name": os.environ.get("OTEL_SERVICE_NAME", SERVICE),
                                 "service.namespace": "warden"})
@@ -87,6 +90,13 @@ def configure(span_exporter=None, metric_readers=None, log_exporter=None) -> boo
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
         spans, logs = BatchSpanProcessor(OTLPSpanExporter()), BatchLogRecordProcessor(OTLPLogExporter())
         readers = [PeriodicExportingMetricReader(OTLPMetricExporter(), export_interval_millis=10_000)]
+    elif azure and not (span_exporter or metric_readers or log_exporter):
+        from azure.monitor.opentelemetry.exporter import (AzureMonitorLogExporter, AzureMonitorMetricExporter,
+                                                          AzureMonitorTraceExporter)
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+        spans = BatchSpanProcessor(AzureMonitorTraceExporter())
+        logs = BatchLogRecordProcessor(AzureMonitorLogExporter())
+        readers = [PeriodicExportingMetricReader(AzureMonitorMetricExporter(), export_interval_millis=60_000)]
     else:
         spans = SimpleSpanProcessor(span_exporter) if span_exporter else None
         logs = SimpleLogRecordProcessor(log_exporter) if log_exporter else None

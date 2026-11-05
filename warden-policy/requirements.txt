@@ -12,3 +12,4 @@ opentelemetry-exporter-otlp-proto-http==1.45.2
 opentelemetry-instrumentation-fastapi==0.66b2
 opentelemetry-instrumentation-httpx==0.66b2
 spiffe==0.4.0  # phase 6b: workload identity for ledger reads (LEDGER_AUTH=spiffe)
+azure-monitor-opentelemetry-exporter==1.0.0b58  # phase 11c: traces, metrics and logs to Application Insights on Azure

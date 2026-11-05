@@ -91,6 +91,33 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
+// Phase 11c: Application Insights, keeping its data in the workspace above (so under the same
+// free allowance and daily cap), and a workbook with the local Grafana dashboard's panels.
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: '${prefix}-insights'
+  location: location
+  tags: tags
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logs.id
+    IngestionMode: 'LogAnalytics'
+  }
+}
+
+resource dashboard 'Microsoft.Insights/workbooks@2023-06-01' = {
+  name: guid(resourceGroup().id, 'warden-workbook')
+  location: location
+  tags: tags
+  kind: 'shared'
+  properties: {
+    displayName: 'Warden'
+    category: 'workbook'
+    sourceId: appInsights.id
+    serializedData: loadTextContent('workbook.json') // built by build_workbook.py
+  }
+}
+
 // ---------------------------------------------------------------- registry
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: '${prefix}${suffix}'
@@ -247,6 +274,12 @@ resource copyAudit 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 var auditCopyUrl = '${auditStorage.properties.primaryEndpoints.blob}audit'
 
+resource insightsSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: vault
+  name: 'appinsights-connection'
+  properties: { value: appInsights.properties.ConnectionString }
+}
+
 // ---------------------------------------------------------------- Postgres
 resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   name: '${prefix}-pg-${suffix}'
@@ -393,12 +426,27 @@ var userSignIn = [
   { name: 'TOKEN_AUDIENCE', value: signInAppId }
   { name: 'ROLES_CLAIM', value: 'roles' }
 ]
-var noTelemetry = [{ name: 'OTEL_SDK_DISABLED', value: 'true' }]
 var agentKeysVolume = {
   name: 'agent-keys'
   storageType: 'Secret'
   secrets: [{ secretRef: 'agent-keys-json', path: 'agent-keys.json' }]
 }
+
+// Phase 11c: where a service's traces and metrics go on Azure. The services started with
+// opentelemetry-instrument pick Azure Monitor's exporters by name; the backend reads the
+// connection string itself. Service logs stay in the container log, as locally.
+func telemetry(service string) array => [
+  { name: 'OTEL_SERVICE_NAME', value: service }
+  { name: 'OTEL_RESOURCE_ATTRIBUTES', value: 'service.namespace=warden' }
+  { name: 'OTEL_TRACES_EXPORTER', value: 'azure_monitor_opentelemetry_exporter' }
+  { name: 'OTEL_METRICS_EXPORTER', value: 'azure_monitor_opentelemetry_exporter' }
+  { name: 'OTEL_LOGS_EXPORTER', value: 'none' }
+  { name: 'OTEL_METRIC_EXPORT_INTERVAL', value: '60000' }
+  { name: 'OTEL_PYTHON_FASTAPI_EXCLUDED_URLS', value: 'health' }
+  { name: 'OTEL_SEMCONV_STABILITY_OPT_IN', value: 'http' }
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection' }
+  { name: 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED_ALL', value: 'true' } // no usage reports to Microsoft
+]
 
 func vaultSecret(vaultUri string, name string, identityId string) object => {
   name: name
@@ -416,7 +464,7 @@ var apps = [
     cpu: '0.25'
     memory: '0.5Gi'
     workloadIdentity: ''
-    secrets: ['pg-ledger-password', 'vendor-lookup-key']
+    secrets: ['pg-ledger-password', 'vendor-lookup-key', 'appinsights-connection']
     volumes: []
   }
   {
@@ -427,7 +475,7 @@ var apps = [
     cpu: '0.25'
     memory: '0.5Gi'
     workloadIdentity: controlIdentity.id
-    secrets: ['control-db-url']
+    secrets: ['control-db-url', 'appinsights-connection']
     volumes: []
   }
   {
@@ -438,7 +486,7 @@ var apps = [
     cpu: '0.25'
     memory: '0.5Gi'
     workloadIdentity: policyIdentity.id
-    secrets: []
+    secrets: ['appinsights-connection']
     volumes: []
   }
   {
@@ -471,7 +519,7 @@ var apps = [
     cpu: '0.5'
     memory: '1Gi'
     workloadIdentity: backendIdentity.id
-    secrets: ['pg-backend-password', 'agent-keys-json', 'entry-keys']
+    secrets: ['pg-backend-password', 'agent-keys-json', 'entry-keys', 'appinsights-connection']
     volumes: [agentKeysVolume]
   }
   {
@@ -509,14 +557,14 @@ var apps = [
     cpu: '0.5'
     memory: '1Gi'
     workloadIdentity: ''
-    secrets: ['pg-quality-password']
+    secrets: ['pg-quality-password', 'appinsights-connection']
     volumes: []
   }
 ]
 
 // Each app's settings, in the same order as apps.
 var appEnv = [
-  concat(noTelemetry, [
+  concat(telemetry('warden-ledger'), [
     { name: 'POSTGRES_HOST', value: postgresHost }
     { name: 'PGPASS_WARDEN_LEDGER', secretRef: 'pg-ledger-password' }
     { name: 'VENDOR_LOOKUP_KEY', secretRef: 'vendor-lookup-key' }
@@ -527,13 +575,13 @@ var appEnv = [
     { name: 'LEDGER_WRITERS', value: backendIdentity.properties.clientId }
     { name: 'LEDGER_READERS', value: policyIdentity.properties.clientId }
   ])
-  concat(noTelemetry, userSignIn, [
+  concat(telemetry('warden-control'), userSignIn, [
     { name: 'CONTROL_DB', secretRef: 'control-db-url' }
     { name: 'CANARY_VENDORS', value: 'CANARY-DO-NOT-PAY' }
     { name: 'AUDIT_WORM_URL', value: auditCopyUrl }
     { name: 'AZURE_CLIENT_ID', value: controlIdentity.properties.clientId }
   ])
-  concat(noTelemetry, [
+  concat(telemetry('warden-policy'), [
     { name: 'CONTROL_URL', value: 'http://warden-control' }
     { name: 'LEDGER_URL', value: 'http://warden-ledger' }
     { name: 'LEDGER_AUTH', value: 'entra' }
@@ -548,7 +596,7 @@ var appEnv = [
     { name: 'CONTROL_URL', value: 'http://warden-control' }
     { name: 'WARDEN_AGENT_KEYS_FILE', value: '/run/agent-keys/agent-keys.json' }
   ]
-  concat(noTelemetry, userSignIn, [
+  concat(telemetry('warden-backend'), userSignIn, [
     { name: 'POSTGRES_HOST', value: postgresHost }
     { name: 'PGPASS_WARDEN_BACKEND', secretRef: 'pg-backend-password' }
     { name: 'LITELLM_URL', value: 'http://warden-gateway' }
@@ -594,7 +642,7 @@ var appEnv = [
   [
     { name: 'OCR_WORK_DIR', value: '/tmp' } // each image gets its own folder here; the jail sees only that one
   ]
-  concat(noTelemetry, userSignIn, [
+  concat(telemetry('warden-quality'), userSignIn, [
     { name: 'POSTGRES_HOST', value: postgresHost }
     { name: 'PGPASS_WARDEN_QUALITY', secretRef: 'pg-quality-password' }
     { name: 'CONTROL_URL', value: 'http://warden-control' }
@@ -605,7 +653,7 @@ resource containerApps 'Microsoft.App/containerApps@2024-03-01' = [for (app, i) 
   name: app.name
   location: location
   tags: tags
-  dependsOn: [pull, readSecrets, secrets, copyAudit, auditWriteOnce]
+  dependsOn: [pull, readSecrets, secrets, insightsSecret, copyAudit, auditWriteOnce]
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: union({ '${appsIdentity.id}': {} }, empty(app.workloadIdentity) ? {} : { '${app.workloadIdentity}': {} })
@@ -776,3 +824,4 @@ output auditCopyUrl string = auditCopyUrl
 output apimName string = apim.name
 output apimGatewayUrl string = '${apim.properties.gatewayUrl}/warden'
 output backendUrl string = backendUrl
+output insightsName string = appInsights.name

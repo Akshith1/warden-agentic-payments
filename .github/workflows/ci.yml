@@ -189,6 +189,8 @@ jobs:
           out=$(./bicep lint infra/azure/main.bicep 2>&1) || { echo "$out"; exit 1; }
           if [ -n "$out" ]; then echo "$out"; exit 1; fi
           ./bicep build infra/azure/main.bicep --stdout > /dev/null
+      - name: The Azure dashboard (workbook) matches its generator
+        run: python3 infra/azure/build_workbook.py && git diff --exit-code infra/azure/workbook.json
       - name: The deploy, teardown and try-api scripts parse
         shell: pwsh
         run: |
