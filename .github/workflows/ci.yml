@@ -208,7 +208,7 @@ jobs:
           psql -d template1 -qc "ALTER SCHEMA public OWNER TO azure_pg_admin" -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC"
           for password in first second; do
             PGUSER=wardenadmin PGPASSWORD=ci-admin PGPASS_WARDEN_LEDGER=l-$password \
-              PGPASS_WARDEN_BACKEND=b-$password PGPASS_WARDEN_CONTROL=c-$password \\
+              PGPASS_WARDEN_BACKEND=b-$password PGPASS_WARDEN_CONTROL=c-$password \
               PGPASS_WARDEN_QUALITY=q-$password sh infra/azure/db-init.sh
           done
           # The second run's passwords are the ones that work, and each role reaches only its own database.
