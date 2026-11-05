@@ -372,7 +372,7 @@ The same core payment path runs on Azure, from one script, sized for a free acco
 | The hash chain alone | Plus a write-once copy (phase 11b): every entry also goes to Blob storage under an immutability policy, and the Audit log page checks the database against it |
 | Outside systems call the backend on the Docker network | API Management (Consumption) in front of the backend (phase 11b-2): a subscription key, an Entra ID token with the submitter role, a rate limit and a daily quota |
 
-Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, API Management, and OCR for scanned invoices. Not yet: data quality and observability. MLflow stays local: the bundled extraction prompt is used on Azure.
+Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, API Management, OCR for scanned invoices, and data quality with the data loader. Not yet: observability. MLflow stays local: the bundled extraction prompt is used on Azure.
 
 ### Deploy
 
@@ -397,6 +397,10 @@ az containerapp exec -n warden-control -g warden-rg --command "python -m app.tam
 ```
 
 The console's Audit log page still says **Chain verified**: the fingerprints are consistent again. Below it, it says **This log no longer matches its write-once copy: entry 3 differs** and marks entry 3 onwards. The copy in Blob storage couldn't have changed, so the database must have. (Locally, without the copy, `python -m app.tamper --seq 3` without `--rechain` is scenario 15: the chain catches a careless edit.)
+
+### Data and data quality on Azure
+
+The first deploy runs the data loader once, as a Container Apps job (`warden-data-loader`): the same real receipts (SROIE, CORD) into the invoice inbox and public spending data into vendor history as locally, so vendors with enough history can be approved without a person on Azure too. `-LoadData` runs it again. The data-quality service checks the ledger and the inbox with a read-only login, and a critical failure trips the kill switch, as locally. It checks every 10 minutes while awake; since it sleeps when idle, a scheduled job (`warden-quality-schedule`) wakes it every 6 hours for a run. **Check now** on the console's Data quality page works as locally.
 
 ### Scanned invoices on Azure
 

@@ -30,3 +30,30 @@ SQL
 create warden_ledger "${PGPASS_WARDEN_LEDGER:?}"
 create warden_backend "${PGPASS_WARDEN_BACKEND:?}"
 create warden_control "${PGPASS_WARDEN_CONTROL:?}"   # phase 11: the audit log and kill switch
+
+# Phase 11c: the data-quality checks' login, which may only read: the ledger's tables and the
+# invoice inbox, and every session read-only. As infra/postgres-init's reader().
+reader() {
+  role="$1"; password="$2"
+  psql -v ON_ERROR_STOP=1 --dbname postgres <<SQL
+SELECT format('CREATE ROLE %I LOGIN', '$role')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$role') \gexec
+ALTER ROLE $role LOGIN PASSWORD '$password' NOCREATEDB NOCREATEROLE;
+ALTER ROLE $role SET default_transaction_read_only = on;
+GRANT CONNECT ON DATABASE warden_ledger TO $role;
+GRANT CONNECT ON DATABASE warden_backend TO $role;
+SQL
+  psql -v ON_ERROR_STOP=1 --dbname warden_ledger <<SQL
+GRANT USAGE ON SCHEMA public TO $role;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO $role;
+ALTER DEFAULT PRIVILEGES FOR ROLE warden_ledger IN SCHEMA public GRANT SELECT ON TABLES TO $role;
+SQL
+  psql -v ON_ERROR_STOP=1 --dbname warden_backend <<SQL
+GRANT USAGE ON SCHEMA public TO $role;
+SELECT format('GRANT SELECT ON invoice_inbox TO %I', '$role')
+WHERE to_regclass('public.invoice_inbox') IS NOT NULL \gexec
+SQL
+  echo "ready: read-only role $role"
+}
+
+reader warden_quality "${PGPASS_WARDEN_QUALITY:?}"

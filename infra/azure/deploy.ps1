@@ -3,6 +3,7 @@ Phase 11a: deploys Warden's core payment path to Azure.
 
     .\infra\azure\deploy.ps1                 # first deploy, and every redeploy after a change
     .\infra\azure\deploy.ps1 -SkipImages     # settings only: reuse the images pushed last time
+    .\infra\azure\deploy.ps1 -LoadData       # also run the data loader again (it runs once by itself)
 
 Run it from the repository folder, signed in with `az login`, with Docker Desktop running and
 .env filled in (it reads the model keys and passwords from there). Safe to run again: every
@@ -27,6 +28,7 @@ param(
     [string]$Location = "centralus",
     [string]$ResourceGroup = "warden-rg",
     [switch]$SkipImages,
+    [switch]$LoadData,
     [switch]$Yes
 )
 
@@ -116,6 +118,7 @@ function Ensure-State($name, $value) {
 }
 Ensure-State "pgAdminPassword" ((New-Secret 24) + "-Wd7")
 Ensure-State "pgControlPassword" (New-Secret 24)
+Ensure-State "pgQualityPassword" (New-Secret 24)  # phase 11c: the data-quality checks' read-only login
 Ensure-State "entryKeyConsole" (New-Secret 32)    # phase 11b-2: the backend's front-door keys
 Ensure-State "entryKeyGateway" (New-Secret 32)
 $agents = @("guardrail", "extraction", "risk-scoring", "approval", "critic", "eval-gate")
@@ -297,6 +300,7 @@ function Deploy-Bicep([bool]$apps, [string]$tag) {
             pgLedgerPassword       = @{ value = $dotenv["PGPASS_WARDEN_LEDGER"] }
             pgBackendPassword      = @{ value = $dotenv["PGPASS_WARDEN_BACKEND"] }
             pgControlPassword      = @{ value = $state.pgControlPassword }
+            pgQualityPassword      = @{ value = $state.pgQualityPassword }
             signInClientSecret     = @{ value = $state.signInClientSecret }
             agentKeysJson          = @{ value = ($state.agentKeys | ConvertTo-Json -Compress) }
             entryKeyConsole        = @{ value = $state.entryKeyConsole }
@@ -354,6 +358,8 @@ if ($SkipImages) {
         @{ name = "warden-ledger"; context = "warden-ledger" },
         @{ name = "warden-pii"; context = "warden-pii" },
         @{ name = "warden-ocr"; context = "warden-ocr" },
+        @{ name = "warden-quality"; context = "warden-quality" },
+        @{ name = "warden-data-loader"; context = "warden-data-loader" },
         @{ name = "warden-backend"; context = "warden-backend" },
         @{ name = "warden-gateway"; context = "infra/litellm" },
         @{ name = "warden-console"; context = "warden-console" },
@@ -384,16 +390,29 @@ if ($SkipImages) {
 Step "Deploying the apps (image $tag)"
 $out = Deploy-Bicep $true $tag
 
-Step "Creating the service databases (the warden-db-init job)"
-$execution = Invoke-Az containerapp job start -n warden-db-init -g $ResourceGroup --query name -o tsv
-$status = "Running"
-for ($i = 0; $i -lt 60 -and $status -in @("Running", "Processing", ""); $i++) {
-    Start-Sleep -Seconds 10
-    $status = Invoke-Az containerapp job execution show -n warden-db-init -g $ResourceGroup --job-execution-name $execution --query properties.status -o tsv
-    Write-Host "  $status"
+# Starts a Container Apps job and waits for it; stops the deploy if it doesn't succeed.
+function Run-Job([string]$job, [int]$minutes) {
+    $execution = Invoke-Az containerapp job start -n $job -g $ResourceGroup --query name -o tsv
+    $status = "Running"
+    for ($i = 0; $i -lt ($minutes * 6) -and $status -in @("Running", "Processing", ""); $i++) {
+        Start-Sleep -Seconds 10
+        $status = Invoke-Az containerapp job execution show -n $job -g $ResourceGroup --job-execution-name $execution --query properties.status -o tsv
+        if ($i % 3 -eq 2 -or $status -notin @("Running", "Processing", "")) { Write-Host "  $status" }
+    }
+    if ($status -ne "Succeeded") {
+        throw "The $job job ended '$status'. Its log: Azure portal > $ResourceGroup > $job > Execution history > Console logs."
+    }
 }
-if ($status -ne "Succeeded") {
-    throw "The database job ended '$status'. Its log: Azure portal > $ResourceGroup > warden-db-init > Execution history > Console logs."
+
+Step "Creating the service databases (the warden-db-init job)"
+Run-Job "warden-db-init" 10
+
+# Phase 11c: real receipts and vendor history, once (or again with -LoadData).
+if ($LoadData -or -not $state.dataLoaded) {
+    Step "Loading receipts and vendor history (the warden-data-loader job: 5-15 minutes)"
+    Run-Job "warden-data-loader" 30
+    $state | Add-Member -NotePropertyName "dataLoaded" -NotePropertyValue (Get-Date -Format "yyyy-MM-dd HH:mm") -Force
+    Save-State $state
 }
 
 # ------------------------------------------------------------------ done

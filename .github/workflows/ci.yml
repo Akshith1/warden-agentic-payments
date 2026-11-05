@@ -208,13 +208,18 @@ jobs:
           psql -d template1 -qc "ALTER SCHEMA public OWNER TO azure_pg_admin" -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC"
           for password in first second; do
             PGUSER=wardenadmin PGPASSWORD=ci-admin PGPASS_WARDEN_LEDGER=l-$password \
-              PGPASS_WARDEN_BACKEND=b-$password PGPASS_WARDEN_CONTROL=c-$password sh infra/azure/db-init.sh
+              PGPASS_WARDEN_BACKEND=b-$password PGPASS_WARDEN_CONTROL=c-$password \
+              PGPASS_WARDEN_QUALITY=q-$password sh infra/azure/db-init.sh
           done
           # The second run's passwords are the ones that work, and each role reaches only its own database.
           for r in ledger backend control; do
             PGUSER=warden_$r PGPASSWORD=${r:0:1}-second psql -d warden_$r -tAc "CREATE TABLE t (x int)"
           done
           if PGUSER=warden_control PGPASSWORD=c-second psql -d warden_ledger -tAc "SELECT 1"; then exit 1; fi
+          # The quality login reads the ledger, including tables made later, and can't write.
+          PGUSER=warden_ledger PGPASSWORD=l-second psql -d warden_ledger -qc "CREATE TABLE later (x int)"
+          PGUSER=warden_quality PGPASSWORD=q-second psql -d warden_ledger -tAc "SELECT count(*) FROM later"
+          if PGUSER=warden_quality PGPASSWORD=q-second psql -d warden_ledger -tAc "INSERT INTO later VALUES (1)"; then exit 1; fi
 
   console:
     name: Console type check and build

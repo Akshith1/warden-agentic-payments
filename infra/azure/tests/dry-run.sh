@@ -18,7 +18,8 @@ pwsh -NoProfile -File infra/azure/deploy.ps1 -Yes
 grep -q '"signInClientSecret"' .azure-warden.json
 grep -q '"intakeClientSecret"' .azure-warden.json
 grep -q '"entryKeyGateway"' .azure-warden.json
-test "$(grep -c '^docker push' "$FAKE_AZ_DIR/docker.log")" -eq 9          # 11 builds, the 2 bases stay local
+test "$(grep -c '^docker push' "$FAKE_AZ_DIR/docker.log")" -eq 11         # 13 builds, the 2 bases stay local
+grep -q '^containerapp job start -n warden-data-loader' "$FAKE_AZ_DIR/calls.log"     # the data, loaded once
 python3 - "$FAKE_AZ_DIR" <<'PY'
 import json, sys
 d = sys.argv[1]
@@ -43,6 +44,7 @@ echo "--- second deploy: nothing new may be created"
 : > "$FAKE_AZ_DIR/calls.log"
 pwsh -NoProfile -File infra/azure/deploy.ps1 -Yes -SkipImages
 if grep -E 'rest --method POST' "$FAKE_AZ_DIR/calls.log"; then echo "a second deploy created something"; exit 1; fi
+if grep -q 'job start -n warden-data-loader' "$FAKE_AZ_DIR/calls.log"; then echo "the data was loaded twice"; exit 1; fi
 
 echo "--- teardown"
 pwsh -NoProfile -File infra/azure/teardown.ps1 -Yes
