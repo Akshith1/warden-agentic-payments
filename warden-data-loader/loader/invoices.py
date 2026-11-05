@@ -3,12 +3,15 @@ OCR text plus their ground-truth labels. The text is what the Extraction
 agent reads; the labels are the eval set for phase 2's promotion gate.
 Images are not stored in phase 1 (the sandboxed OCR path arrives in phase 5)."""
 import json
+import logging
 import os
 
 from datasets import Image, load_dataset
 from psycopg.types.json import Jsonb
 
 from . import db
+
+log = logging.getLogger("warden.loader")
 
 LIMITS = {
     ("sroie", "train"): int(os.environ.get("SROIE_TRAIN_LIMIT", "200")),
@@ -18,10 +21,16 @@ LIMITS = {
 }
 
 
-def _text_only(name: str, split: str):
-    # Phase 1 reads the OCR text and labels only. decode=False stops the library from
-    # opening every image (remove_columns alone still decodes first). Images return
-    # with the sandboxed OCR path in phase 5.
+def _text_only(name: str, split: str, columns: list[str]):
+    # Phase 1 reads the OCR text and labels only. Phase 11c: asking the Parquet reader for
+    # just those columns means the images' bytes are never read at all. With only
+    # decode=False they still were, a few hundred images at a time, and on Azure the loader
+    # ran out of its 2 GB and was killed (exit 137). If a dataset won't take the column
+    # list, fall back to decode=False (remove_columns alone still decodes first).
+    try:
+        return load_dataset(name, split=split, streaming=True, columns=columns)
+    except (TypeError, ValueError) as exc:
+        log.warning("%s: can't read only %s (%s); reading every column", name, columns, exc)
     ds = load_dataset(name, split=split, streaming=True)
     if ds.column_names and "image" in ds.column_names:
         ds = ds.cast_column("image", Image(decode=False))
@@ -29,7 +38,7 @@ def _text_only(name: str, split: str):
 
 
 def sroie_rows(split: str, limit: int):
-    for i, rec in enumerate(_text_only("jsdnrs/ICDAR2019-SROIE", split)):
+    for i, rec in enumerate(_text_only("jsdnrs/ICDAR2019-SROIE", split, ["key", "words", "entities"])):
         if i >= limit:
             return
         words = rec.get("words") or []
@@ -39,7 +48,7 @@ def sroie_rows(split: str, limit: int):
 
 
 def cord_rows(split: str, limit: int):
-    for i, rec in enumerate(_text_only("naver-clova-ix/cord-v2", split)):
+    for i, rec in enumerate(_text_only("naver-clova-ix/cord-v2", split, ["ground_truth"])):
         if i >= limit:
             return
         gt = json.loads(rec["ground_truth"])
