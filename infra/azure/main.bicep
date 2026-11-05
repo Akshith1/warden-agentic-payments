@@ -59,6 +59,8 @@ param pgBackendPassword string
 @secure()
 param pgControlPassword string
 @secure()
+param pgQualityPassword string
+@secure()
 param signInClientSecret string
 @description('Phase 11b-2: the front-door keys the backend admits (the console\'s and API Management\'s).')
 @secure()
@@ -175,6 +177,7 @@ var secretValues = {
   'pg-ledger-password': pgLedgerPassword
   'pg-backend-password': pgBackendPassword
   'pg-control-password': pgControlPassword
+  'pg-quality-password': pgQualityPassword
   'control-db-url': 'postgresql://warden_control:${pgControlPassword}@${postgresHost}:5432/warden_control?sslmode=require'
   'signin-client-secret': signInClientSecret
   'agent-keys-json': agentKeysJson
@@ -497,6 +500,18 @@ var apps = [
     secrets: []
     volumes: []
   }
+  {
+    // Phase 11c: the data-quality checks (Great Expectations), with a read-only database login.
+    name: 'warden-quality'
+    image: 'warden-quality'
+    port: 8000
+    external: false
+    cpu: '0.5'
+    memory: '1Gi'
+    workloadIdentity: ''
+    secrets: ['pg-quality-password']
+    volumes: []
+  }
 ]
 
 // Each app's settings, in the same order as apps.
@@ -562,6 +577,7 @@ var appEnv = [
     { name: 'BACKEND_ENTRY_KEY', secretRef: 'console-entry-key' }
     { name: 'LEDGER_URL', value: 'http://warden-ledger' }
     { name: 'CONTROL_URL', value: 'http://warden-control' }
+    { name: 'QUALITY_URL', value: 'http://warden-quality' }
     { name: 'CONSOLE_URL', value: consoleUrl }
     { name: 'VENDOR_LOOKUP_KEY', secretRef: 'vendor-lookup-key' }
     { name: 'OIDC_ISSUER', value: '${authority}/v2.0' }
@@ -578,6 +594,11 @@ var appEnv = [
   [
     { name: 'OCR_WORK_DIR', value: '/tmp' } // each image gets its own folder here; the jail sees only that one
   ]
+  concat(noTelemetry, userSignIn, [
+    { name: 'POSTGRES_HOST', value: postgresHost }
+    { name: 'PGPASS_WARDEN_QUALITY', secretRef: 'pg-quality-password' }
+    { name: 'CONTROL_URL', value: 'http://warden-control' }
+  ])
 ]
 
 resource containerApps 'Microsoft.App/containerApps@2024-03-01' = [for (app, i) in apps: if (deployApps) {
@@ -641,7 +662,7 @@ resource dbInit 'Microsoft.App/jobs@2024-03-01' = if (deployApps) {
       replicaRetryLimit: 1
       manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
       registries: [{ server: registryServer, identity: appsIdentity.id }]
-      secrets: [for s in ['pg-admin-password', 'pg-ledger-password', 'pg-backend-password', 'pg-control-password']: vaultSecret(vault.properties.vaultUri, s, appsIdentity.id)]
+      secrets: [for s in ['pg-admin-password', 'pg-ledger-password', 'pg-backend-password', 'pg-control-password', 'pg-quality-password']: vaultSecret(vault.properties.vaultUri, s, appsIdentity.id)]
     }
     template: {
       containers: [
@@ -657,7 +678,83 @@ resource dbInit 'Microsoft.App/jobs@2024-03-01' = if (deployApps) {
             { name: 'PGPASS_WARDEN_LEDGER', secretRef: 'pg-ledger-password' }
             { name: 'PGPASS_WARDEN_BACKEND', secretRef: 'pg-backend-password' }
             { name: 'PGPASS_WARDEN_CONTROL', secretRef: 'pg-control-password' }
+            { name: 'PGPASS_WARDEN_QUALITY', secretRef: 'pg-quality-password' }
           ]
+        }
+      ]
+    }
+  }
+}
+
+// Phase 11c: the data loader, run once by deploy.ps1 (again with -LoadData): real receipts
+// (SROIE, CORD) into the invoice inbox and public spending data into vendor history, then the
+// data-quality checks. It writes as the ledger's and the backend's own roles, as locally.
+resource dataLoader 'Microsoft.App/jobs@2024-03-01' = if (deployApps) {
+  name: 'warden-data-loader'
+  location: location
+  tags: tags
+  dependsOn: [pull, readSecrets, secrets, allowAzure]
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${appsIdentity.id}': {} }
+  }
+  properties: {
+    environmentId: env.id
+    configuration: {
+      triggerType: 'Manual'
+      replicaTimeout: 1800
+      replicaRetryLimit: 0
+      manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
+      registries: [{ server: registryServer, identity: appsIdentity.id }]
+      secrets: [for s in ['pg-ledger-password', 'pg-backend-password']: vaultSecret(vault.properties.vaultUri, s, appsIdentity.id)]
+    }
+    template: {
+      containers: [
+        {
+          name: 'data-loader'
+          image: '${registryServer}/warden-data-loader:${imageTag}'
+          resources: { cpu: json('1'), memory: '2Gi' }
+          env: [
+            { name: 'POSTGRES_HOST', value: postgresHost }
+            { name: 'PGPASS_WARDEN_LEDGER', secretRef: 'pg-ledger-password' }
+            { name: 'PGPASS_WARDEN_BACKEND', secretRef: 'pg-backend-password' }
+            { name: 'QUALITY_URL', value: 'http://warden-quality' }
+            { name: 'HF_HOME', value: '/tmp/huggingface' } // no lasting cache on Azure; one download per load
+          ]
+        }
+      ]
+    }
+  }
+}
+
+// Phase 11c: the checks run by themselves every 10 minutes while the quality service is awake;
+// on Azure it sleeps when idle, so this wakes it every 6 hours and asks for a run. A critical
+// failure trips the kill switch, as locally.
+resource qualitySchedule 'Microsoft.App/jobs@2024-03-01' = if (deployApps) {
+  name: 'warden-quality-schedule'
+  location: location
+  tags: tags
+  dependsOn: [pull, readSecrets]
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${appsIdentity.id}': {} }
+  }
+  properties: {
+    environmentId: env.id
+    configuration: {
+      triggerType: 'Schedule'
+      replicaTimeout: 600
+      replicaRetryLimit: 1
+      scheduleTriggerConfig: { cronExpression: '17 */6 * * *', parallelism: 1, replicaCompletionCount: 1 }
+      registries: [{ server: registryServer, identity: appsIdentity.id }]
+    }
+    template: {
+      containers: [
+        {
+          name: 'run-checks'
+          image: '${registryServer}/warden-db-init:${imageTag}' // any small image with wget
+          command: ['sh', '-c', 'wget -q -T 300 -O - --post-data="" http://warden-quality/run']
+          resources: { cpu: json('0.25'), memory: '0.5Gi' }
         }
       ]
     }
