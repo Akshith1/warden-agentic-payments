@@ -17,6 +17,9 @@ def rules_context() -> dict:
         "minimum_prior_payments": config.MIN_PRIOR_PAYMENTS,
         "history_rule": "Vendors with fewer settled payments than the minimum are escalated by code before you "
                         "see them; you only see vendors that meet it.",
+        "routine_amount_limit": config.ROUTINE_AMOUNT_THRESHOLD,
+        "amount_rule": "Invoices above the routine amount limit go to a person whatever you decide, by code and "
+                       "by policy; don't escalate for that reason alone.",
     }
 
 

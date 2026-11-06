@@ -18,6 +18,12 @@ class InvoiceExtraction(BaseModel):
     currency: str | None = Field(default=None, description="ISO 4217 code if the document shows one, else null")
     total_amount: float | None = Field(description="Final amount payable as a plain number, or null")
     line_items: list[LineItem] = Field(default_factory=list)
+    # Between the items and the total: tax, and anything else the document adds or takes off.
+    tax_amount: float | None = Field(default=None, description=(
+        "Total tax charged on the document (SST, GST, VAT, sales or service tax) as a plain number, or null"))
+    adjustments: float | None = Field(default=None, description=(
+        "Rounding, service charge, delivery or discount between the items plus tax and the total, as one "
+        "plain number: positive if it adds, negative if it takes off; null if none"))
     remit_to_account: str | None = Field(description="Bank account or remittance details for payment, or null")
     extraction_confidence: float = Field(ge=0, le=1, description="How sure you are the fields are correct")
 

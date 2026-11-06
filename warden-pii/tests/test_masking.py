@@ -134,3 +134,12 @@ def test_an_invoice_number_is_not_a_phone_number_and_windows_line_endings_change
     assert "Invoice No: K-2026-155258" in out["masked"] and "Bill To: Warden Demo Co." in out["masked"]
     assert set(out["mapping"].values()) == {"03-5631 2200", "Siti Nurhaliza"}
     assert masked(api, "Receipt #: 0123456789\nCall us: 012-345 6789")["mapping"] == {"<PHONE_NUMBER_1>": "012-345 6789"}
+
+
+def test_a_name_in_capitals_is_masked_whole(api):
+    """Phase 11 finding: only "CHAY" of "TAN CHAY YEE" was masked."""
+    out = masked(api, RECEIPT)
+    assert "TAN CHAY YEE" in out["mapping"].values()
+    assert "CHAY" not in out["masked"] and "TAN" not in out["masked"].split("\n")[0]
+    # A company line in capitals and a heading stay as they are.
+    assert "OJC MARKETING SDN BHD" in out["masked"] and "TAX INVOICE" in out["masked"]

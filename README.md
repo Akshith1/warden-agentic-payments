@@ -388,6 +388,15 @@ Values generated for Azure (Postgres admin password, the gateway's agent keys, t
 
 **The first page after a quiet spell takes 20-60 seconds**: every app is asleep. The backend wakes the services a run needs before its first step (`WAKE_DEPENDENCIES`), so a run doesn't fail on a sleeping service.
 
+### Scenarios 28-31: what the Azure profile proves
+
+| # | Scenario | How to run it | Live run |
+| --- | --- | --- | --- |
+| 28 | A rewritten audit history, chain recomputed, caught against the write-once copy | `az containerapp exec -n warden-control -g warden-rg --command "python -m app.tamper --seq 3 --rechain"`, then the Audit log page | [11b](docs/live-runs/2026-11-phase-11b.md) |
+| 29 | An outside system can't go round API Management: no key, no token, or a valid token sent straight to the backend are all refused; the rate limit holds | `.\infra\azure\try-api.ps1` | [11b-2](docs/live-runs/2026-11-phase-11b.md#phase-11b-2-api-management-for-outside-systems) |
+| 30 | A scanned invoice is read in a jail with no filesystem beyond the image and no network, on Azure's kernel (Landlock ABI 3 plus seccomp) | `az containerapp exec -n warden-ocr -g warden-rg --command "python -m app.selftest"`, then upload `docs/samples/receipt-injected.png` | [11b-3](docs/live-runs/2026-11-phase-11b.md#phase-11b-3-scanned-invoices-on-azure) |
+| 31 | Separation of duties with Entra ID: nobody approves their own invoice, a submitter can't decide, and only the backend's managed identity can write the ledger | Submit as yourself, approve as yourself (refused), as `clerk` (no buttons), as `amira` (paid) | [11a](docs/live-runs/2026-11-phase-11a.md) |
+
 ### Scenario 28: a rewritten history
 
 With a few runs on Azure, rewrite entry 3 and recompute every fingerprint after it, as a careful insider with the database would:
@@ -766,7 +775,7 @@ These are deliberate and each one is removed by a named later phase.
 | 9a | Kill switch (manual, canary, repeated refusals), hash-chained audit log (done) | 13, 14, 15, 19 |
 | 9b | OpenTelemetry traces, metrics and step logs in Grafana; agent consistency check (done). Langfuse | 24-27 |
 | 10 | GitHub Actions: policies, every test suite, console build, Compose and secret checks (done) | CI |
-| 11 | Azure profile: Container Apps, Entra ID sign-in and managed identities, Key Vault (11a, done); write-once audit copy in Blob storage (11b-1); API Management for outside systems (11b-2). OCR, data quality and monitoring (11b-3) | 28-31 |
+| 11 | Azure profile: Container Apps, Entra ID sign-in and managed identities, Key Vault, a write-once audit copy in Blob storage, API Management for outside systems, OCR in a kernel jail, data quality and Application Insights (done) | 28-31 |
 
 ## Data sources
 

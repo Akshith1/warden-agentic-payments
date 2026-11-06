@@ -30,9 +30,17 @@ def run(state: RunState, deps: Deps) -> dict:
     if ext.total_amount is None or ext.total_amount <= 0:
         problems.append("total amount not found")
     elif ext.line_items:
+        # Items, plus tax, plus rounding, service charge or discount, must come to the total.
+        # Phase 11 live run: an invoice with 6% SST was stopped, because only the items were added.
         items_total = sum(i.amount for i in ext.line_items)
-        if abs(items_total - ext.total_amount) > config.LINE_ITEM_TOLERANCE * ext.total_amount:
-            problems.append(f"line items sum to {items_total:.2f} but total is {ext.total_amount:.2f}")
+        expected = items_total + (ext.tax_amount or 0) + (ext.adjustments or 0)
+        if abs(expected - ext.total_amount) > config.LINE_ITEM_TOLERANCE * ext.total_amount:
+            parts = [f"line items sum to {items_total:.2f}"]
+            if ext.tax_amount:
+                parts.append(f"tax {ext.tax_amount:.2f}")
+            if ext.adjustments:
+                parts.append(f"adjustments {ext.adjustments:+.2f}")
+            problems.append(f"{' plus '.join(parts)} but total is {ext.total_amount:.2f}")
 
     currency, assumed = normalize_currency(ext.currency)
     extraction = ext.model_dump() | {"currency": currency, "currency_assumed": assumed}

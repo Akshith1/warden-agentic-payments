@@ -113,11 +113,34 @@ def _non_overlapping(results: list[RecognizerResult]) -> list[RecognizerResult]:
     return sorted(chosen, key=lambda r: r.start)
 
 
+# A line that is only a name in capitals: two to four words of letters ("TAN CHAY YEE").
+_NAME_LINE = re.compile(r"^[A-Z][A-Z'.\-]*(?: [A-Z][A-Z'.\-]*){1,3}$")
+
+
+def _whole_name_line(r: RecognizerResult, text: str) -> RecognizerResult:
+    """Phase 11 finding: spaCy's small model found only "CHAY" in "TAN CHAY YEE", so the models
+    still read "TAN <PERSON_1> YEE". When a name it guessed sits on a line that is nothing but a
+    short name in capitals (no company word, no label word), the whole line is the name."""
+    if r.entity_type != "PERSON" or (r.recognition_metadata or {}).get("recognizer_name") != "SpacyRecognizer":
+        return r
+    start = text.rfind("\n", 0, r.start) + 1
+    end = text.find("\n", r.end)
+    end = len(text) if end == -1 else end
+    line = text[start:end].strip()
+    words = line.split()
+    if (_NAME_LINE.match(line) and not _COMPANY.search(line)
+            and not any(w.lower().strip(".") in NOT_NAMES for w in words)):
+        offset = text.index(line, start)
+        return RecognizerResult(r.entity_type, offset, offset + len(line), r.score, r.analysis_explanation,
+                                r.recognition_metadata)
+    return r
+
+
 def mask(analyzer: AnalyzerEngine, text: str) -> dict:
     # Windows line endings change how spaCy splits the text ("Bill" in "Bill To:" became a name),
     # and nothing downstream needs them.
     text = text.replace("\r\n", "\n")
-    found = [r for r in analyzer.analyze(text=text, language="en") if _keep(r, text)]
+    found = [_whole_name_line(r, text) for r in analyzer.analyze(text=text, language="en") if _keep(r, text)]
     tokens: dict[str, str] = {}      # original -> placeholder
     counts: dict[str, int] = {}
     pieces, last = [], 0
