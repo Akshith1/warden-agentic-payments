@@ -1,0 +1,45 @@
+flowchart TB
+  IN["Invoice: from a person in the console,<br/>or an outside system through API Management"]
+
+  subgraph SCREEN["Before any agent reads it"]
+    direction LR
+    OCR["Scans: OCR in a kernel jail,<br/>no network"]
+    PII["Personal data masked"]
+    G["Guardrail:<br/>rules + safety model"]
+    OCR --> PII --> G
+  end
+
+  subgraph AGENTS["Agents (LangGraph)"]
+    direction LR
+    E["Extraction"] --> R["Risk"] --> A["Approval<br/>3 of 3 must agree"] --> C["Critic<br/>other provider"]
+  end
+
+  POL{"Policy engine<br/>(Cedar)"}
+  H["A person decides<br/>role limits; never<br/>their own invoice"]
+  PAY["Payment executor<br/>no model: dry run,<br/>20 s hold, commit"]
+  L[("Ledger<br/>double-entry")]
+  STOP(["Stopped"])
+
+  IN --> SCREEN --> AGENTS --> POL -- allowed --> PAY --> L
+  G -- hidden instructions --> STOP
+  AGENTS -- any concern --> H
+  POL -- refused for agents --> H
+  H -- approves --> POL
+
+  subgraph GOV["Around every run"]
+    direction LR
+    GW["Model gateway: a key,<br/>routes and budget per agent"]
+    CTL["Kill switch; hash-chained<br/>audit log + write-once copy"]
+    Q["Data quality checks:<br/>a critical failure stops payments"]
+    ID["Ledger writes only from the<br/>backend's workload identity"]
+    GW ~~~ CTL ~~~ Q ~~~ ID
+  end
+
+  L ~~~ GOV
+
+  classDef stop fill:#fde8e8,stroke:#b42318,color:#7a271a
+  classDef money fill:#e7f4ec,stroke:#1f7a4d,color:#14532d
+  classDef human fill:#fff4e0,stroke:#b54708,color:#7a2e0e
+  class STOP stop
+  class PAY,L money
+  class H human
