@@ -2,9 +2,40 @@
 
 [![checks](https://github.com/Akshith1/warden-agentic-payments/actions/workflows/ci.yml/badge.svg)](https://github.com/Akshith1/warden-agentic-payments/actions/workflows/ci.yml)
 
-**Governed agentic payments.** A team of AI agents reads invoices, scores them for fraud, decides whether they are safe to pay, and pays the safe ones through a real double-entry ledger, while governance layers decide what each agent is allowed to do and keep a record of every decision.
+**Governed agentic payments.** AI agents read invoices, score them for fraud, decide which are safe to pay, and pay those through a real double-entry ledger. Every agent works inside limits it can't change: a separate policy engine checks its decisions, a person decides anything unusual, and the payment itself is made by code with no model in it.
 
-This repository is being built in phases (see [Roadmap](#roadmap)):
+It runs locally with Docker Compose, and on Azure from one script. Every claim below has been shown on a real machine with real models and real data, and copied into [the live-run notes](docs/live-runs/).
+
+![How an invoice moves through Warden](docs/architecture.png)
+
+<sub>Source: [`docs/architecture.mmd`](docs/architecture.mmd). The full step list is under [How a payment flows today](#how-a-payment-flows-today).</sub>
+
+## What it has been shown to do
+
+| Claim | Shown live |
+| --- | --- |
+| Routine invoices from known vendors pay themselves; first-seen vendors, thin history, medium risk or a critic's objection go to a person | [phase 2](docs/live-runs/2026-10-phase-2.md#first-fully-automatic-payment), [Azure](docs/live-runs/2026-11-fixes.md) |
+| Instructions hidden in a scanned invoice are stopped before any agent reads it, by fixed rules and a safety model independently | [phase 5](docs/live-runs/2026-11-phase-5.md), [Azure](docs/live-runs/2026-11-phase-11b.md#scenario-08-on-azure-instructions-hidden-in-a-scanned-invoice) |
+| Scans are read in a kernel jail that can't write or reach the network, checked from inside the running container | [Azure](docs/live-runs/2026-11-phase-11b.md#phase-11b-3-scanned-invoices-on-azure) |
+| No model sees names, emails, phone numbers or bank accounts; masking down means the run fails closed | [phase 7](docs/live-runs/2026-11-phase-7.md) |
+| A separate policy engine (Cedar) overruled four agents that all agreed, on a rule only it holds | [phase 4](docs/live-runs/2026-11-phase-4.md) |
+| Nobody approves their own invoice; roles set who may approve what (Keycloak, then Entra ID) | [phase 6](docs/live-runs/2026-11-phase-6.md), [Azure](docs/live-runs/2026-11-phase-11a.md#separation-of-duties) |
+| Only the backend's workload identity can write the ledger; there is no write key | [phase 6b](docs/live-runs/2026-11-phase-6b.md) |
+| A forged vendor history stopped all payments within a second, and only a controller could resume | [phase 7b](docs/live-runs/2026-11-phase-7b.md#a-forged-vendor-history-stops-payments) |
+| A rewritten audit history, chain recomputed, was caught against a write-once copy in Blob storage | [Azure](docs/live-runs/2026-11-phase-11b.md#scenario-28-a-rewritten-history) |
+| Agents asked the same question repeatedly are measured; where the model varies, a rule decides | [phase 9b](docs/live-runs/2026-11-phase-9b.md), [fixes](docs/live-runs/2026-11-fixes.md) |
+| A worse prompt was blocked from production by a per-field floor its average would have passed | [phase 2](docs/live-runs/2026-10-phase-2.md#promotion-gate-third-run-the-per-field-floor-blocks-a-prompt) |
+| Outside systems get in only through API Management: no key, no token, or skipping the gateway are all refused | [Azure](docs/live-runs/2026-11-phase-11b.md#playing-the-outside-system) |
+
+**[The evidence for each claim, and what is still open](docs/PROOF.md).**
+
+## Built with
+
+LangGraph, Instructor and Pydantic for the agents; LiteLLM in front of Groq and OpenAI; Cedar for policy; Presidio and spaCy for personal data; Tesseract in a Landlock and seccomp jail; FastAPI, Postgres and Next.js; Keycloak and SPIRE locally; MLflow and DeepEval for prompts; Great Expectations for data quality; OpenTelemetry with Grafana. On Azure: Container Apps, Entra ID and managed identities, Key Vault, Database for PostgreSQL, Blob immutability, API Management and Application Insights, deployed with Bicep.
+
+## Built in phases
+
+Each phase ended with a live run on a real machine; the findings of each run are in its note and were fixed before the next. See [Roadmap](#roadmap).
 
 - **Phase 1, the agent core:** four LLM agents and a deterministic payment executor run as one LangGraph workflow, on real invoice data, with human-in-the-loop approval and a real ledger. Run live on real models; see [the phase 1 live run](docs/live-runs/2026-10-phase-1.md).
 - **Phase 3, the console:** a web app at http://localhost:3100 to submit invoices, watch each agent's step as it happens, decide escalated invoices, retry failed runs, and see the ledger and the rules in force.
@@ -16,6 +47,10 @@ This repository is being built in phases (see [Roadmap](#roadmap)):
 - **Phase 9a, kill switch and audit log:** anyone with the approver or controller role can stop all payments from the console. Only a controller can resume them. A payment in its settlement hold is stopped before money moves, and retried after the reset. The switch also trips by itself, on a canary vendor or an agent that keeps being refused. Every step of every run goes into a hash-chained audit log that shows exactly where it was edited. See [Kill switch and audit log](#kill-switch-and-audit-log-phase-9a) and [the phase 9a live run](docs/live-runs/2026-11-phase-9a.md).
 - **Phase 6, identity:** people sign in to the console through Keycloak, and every approval is recorded under their own account. Approval is by role (approvers up to 50,000.00, controllers above), and nobody can approve an invoice they submitted. Cedar enforces both, and the backend verifies every token. See [Sign-in and roles](#sign-in-and-roles-phase-6) and [the phase 6 live run](docs/live-runs/2026-11-phase-6.md).
 - **Phase 2, model governance:** the Extraction prompt is versioned in the MLflow Prompt Registry, and a DeepEval promotion gate scores candidate prompts against real labelled receipts. Only a prompt that clears the threshold is ever served. The live run's findings are now explicit rules, and failed runs can be retried. Run live, including the first fully automatic payment; see [the phase 2 live run](docs/live-runs/2026-10-phase-2.md).
+- **Phase 7b, data quality:** Great Expectations checks the ledger, vendor history and loaded data with a read-only login; a critical failure stops payments through the kill switch. See [Data quality](#data-quality-phase-7b) and [the phase 7b live run](docs/live-runs/2026-11-phase-7b.md).
+- **Phase 9b, observability:** every run is one OpenTelemetry trace across the services, with metrics and step logs in Grafana, and a consistency check that asks an agent the same question again. See [Observability](#observability-phase-9b) and [the phase 9b live run](docs/live-runs/2026-11-phase-9b.md).
+- **Phase 10, checks on every push:** policies, every test suite, the console build, Compose and secret checks in GitHub Actions. See [Checks on every push](#checks-on-every-push-phase-10).
+- **Phase 11, Azure:** the same system on Container Apps from one script, with Entra ID, managed identities, Key Vault, a write-once audit copy, API Management, OCR in a kernel jail, data quality and Application Insights. See [On Azure](#on-azure-phase-11a) and the live runs [11a](docs/live-runs/2026-11-phase-11a.md), [11b](docs/live-runs/2026-11-phase-11b.md) and [11c](docs/live-runs/2026-11-phase-11c.md).
 
 ## How a payment flows today
 
@@ -373,7 +408,7 @@ The same core payment path runs on Azure, from one script, sized for a free acco
 | The hash chain alone | Plus a write-once copy (phase 11b): every entry also goes to Blob storage under an immutability policy, and the Audit log page checks the database against it |
 | Outside systems call the backend on the Docker network | API Management (Consumption) in front of the backend (phase 11b-2): a subscription key, an Entra ID token with the submitter role, a rate limit and a daily quota |
 
-Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, API Management, OCR for scanned invoices, data quality with the data loader, and monitoring in Application Insights. MLflow stays local: the bundled extraction prompt is used on Azure. MLflow stays local: the bundled extraction prompt is used on Azure.
+Deployed: the console, backend, ledger, policy, control plane, personal-data masking, the model gateway, the write-once audit copy, API Management, OCR for scanned invoices, data quality with the data loader, and monitoring in Application Insights. MLflow stays local: the bundled extraction prompt is used on Azure.
 
 ### Deploy
 
