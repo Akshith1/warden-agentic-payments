@@ -583,3 +583,29 @@ def test_no_pii_service_no_model_call(checkpointer, ledger):
     with pytest.raises(httpx.ConnectError):
         graph.invoke({"run_id": "x", "invoice_text": "Cashier: Siti", "source": "paste", "audit_trail": []}, cfg)
     assert fake.calls == []
+
+
+# --- Phase 11 live run: invoices that charge tax ------------------------------------------------
+
+
+def test_items_plus_tax_make_the_total(checkpointer, ledger):
+    """An invoice with 6% SST: items 622.00, tax 37.32, total 659.32. It used to be stopped."""
+    items = [{"description": "paper", "amount": 168.0}, {"description": "toner", "amount": 370.0},
+             {"description": "pens", "amount": 84.0}]
+    taxed = invoice(total=659.32, items=items) | {"tax_amount": 37.32}
+    graph, cfg = run(checkpointer, ledger, FakeLLM(taxed))
+    s = state(graph, cfg)
+    assert s["status"] != "blocked", s.get("status_reason")
+
+
+def test_rounding_and_discounts_count_too(checkpointer, ledger):
+    items = [{"description": "a", "amount": 50.0}, {"description": "b", "amount": 40.0}]
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(total=95.35, items=items) | {
+        "tax_amount": 5.40, "adjustments": -0.05}))
+    assert state(graph, cfg)["status"] != "blocked"
+
+
+def test_tax_that_still_does_not_add_up_is_stopped_and_shown(checkpointer, ledger):
+    items = [{"description": "a", "amount": 50.0}, {"description": "b", "amount": 40.0}]
+    graph, cfg = run(checkpointer, ledger, FakeLLM(invoice(total=120.0, items=items) | {"tax_amount": 5.40}))
+    assert "line items sum to 90.00 plus tax 5.40 but total is 120.00" in state(graph, cfg)["status_reason"]

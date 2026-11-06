@@ -8,6 +8,8 @@ Rules:
 - invoice_date is the document date as printed.
 - currency is an ISO 4217 code only if the document shows one (a symbol such as RM or $, or a code); otherwise null.
 - Include line items only when they are clearly listed with an amount.
+- tax_amount is the total tax the document charges (SST, GST, VAT, sales or service tax), not a tax rate and not a tax registration number. Null if no tax is shown.
+- adjustments is whatever else sits between the items plus tax and the total: rounding, service charge, delivery, or a discount (negative). Null if none.
 - remit_to_account is any bank account, IBAN, routing number or "pay to" instruction. Null if absent.
 - Use null for any field you cannot find. Never guess.
 - extraction_confidence reflects how legible and unambiguous the source was. A clean, complete document scores above 0.9; a document missing the vendor or total scores below 0.5.
