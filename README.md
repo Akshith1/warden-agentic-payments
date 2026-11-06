@@ -288,6 +288,7 @@ What the live run found and what changed:
 | --- | --- | --- | --- |
 | Risk | 0.46 to 0.85, medium and high mixed (5 asks) | `AGENT_TEMPERATURES=risk-scoring=0` | 0.78 to 0.85, high every time (10 asks) |
 | Approval | auto_approve 4 times in 10 | Its reasoning model only accepts temperature 1 (the gateway would silently drop any other), so an auto-approval must now be unanimous across `APPROVAL_SAMPLES` asks (3 by default); any other answer sends the invoice to a person, and the lowest confidence is the one checked against the threshold | Measured with the same check; see the phase 9b live run |
+| Approval, criteria rewritten (after phase 11) | auto_approve 5 of 5 on a routine Kestrel invoice, confidence 0.90 to 0.97 | The prompt names when to auto-approve, says escalating a routine invoice is a failure too, and asks for a concern that points at the evidence | auto_approve 5 of 5, confidence 0.97 to 0.98; see [the fixes live run](docs/live-runs/2026-11-fixes.md) |
 
 None of this put money at risk: the code rules and Cedar sent this invoice to a person before the approval agent was asked. They matter for vendors that pass those rules.
 
