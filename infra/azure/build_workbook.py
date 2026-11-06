@@ -91,6 +91,7 @@ requests
 | order by requests desc"""),
     query("Calls between services", """
 dependencies
+| where type != "InProc"   // the ASGI instrumentation's own "http send/receive" spans, not calls
 | summarize calls = count(), failed = countif(success == false), average_ms = round(avg(duration), 1)
             by from = cloud_RoleName, to = target
 | order by calls desc"""),

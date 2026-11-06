@@ -206,7 +206,7 @@
       "content": {
         "version": "KqlItem/1.0",
         "title": "Calls between services",
-        "query": "dependencies\n| summarize calls = count(), failed = countif(success == false), average_ms = round(avg(duration), 1)\n            by from = cloud_RoleName, to = target\n| order by calls desc",
+        "query": "dependencies\n| where type != \"InProc\"   // the ASGI instrumentation's own \"http send/receive\" spans, not calls\n| summarize calls = count(), failed = countif(success == false), average_ms = round(avg(duration), 1)\n            by from = cloud_RoleName, to = target\n| order by calls desc",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.insights/components",
