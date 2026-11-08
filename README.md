@@ -6,7 +6,7 @@
 
 It runs locally with Docker Compose, and on Azure from one script. Every claim below has been shown on a real machine with real models and real data, and copied into [the live-run notes](docs/live-runs/).
 
-**Demo video:** [Warden running live on Azure (YouTube)](https://youtu.be/l4Vhj5dqfy8)
+**Demo video:** [Warden running live on Azure (YouTube)](https://youtu.be/l4Vhj5dqfy8) · **Article:** [the full story on Medium](https://medium.com/@Rajesh-Vasa/ai-agent-that-pays-invoices-48efc7c584f6)
 
 ![How an invoice moves through Warden](docs/architecture.png)
 
