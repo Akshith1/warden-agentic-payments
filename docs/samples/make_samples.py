@@ -10,8 +10,8 @@ FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 CLEAN = """DEMO STATIONERS SDN BHD
 1 Jalan Contoh 3, 81700 Contoh Town
 
-TAX INVOICE      No: DST-2026-0210
-Date: 02/11/2026
+TAX INVOICE      No: DST-2026-0811
+Date: 08/11/2026
 
 A4 paper ream x 4          RM  56.00
 Whiteboard markers x 2     RM  13.80
