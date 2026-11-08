@@ -69,13 +69,13 @@ Write-Host "Gateway: $gateway"
 Write-Host "Signed in as the Warden intake app ($($state.intakeAppId)); first calls may wait while Warden wakes."
 Write-Host ""
 
-$number = "K-2026-" + (Get-Date -Format "HHmmss")
+$number = "DOS-2026-" + (Get-Date -Format "HHmmss")
 $invoice = @"
 TAX INVOICE
 
-Kestrel Office Supplies Sdn Bhd
-No. 12, Jalan Perindustrian 3, 47500 Subang Jaya, Selangor
-Tel: 03-5631 2200
+Demo Office Supplies Sdn Bhd
+No. 1, Jalan Contoh 1, 47500 Contoh Town, Selangor
+Tel: 03-1234 5678
 
 Invoice No: $number
 Date: $(Get-Date -Format "dd/MM/yyyy")

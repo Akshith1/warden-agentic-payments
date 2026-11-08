@@ -27,7 +27,7 @@ def test_reads_a_receipt_inside_the_jail(api, tmp_path):
     r = send(api, (SAMPLES / "receipt-clean.png").read_bytes())
     assert r.status_code == 200, r.text
     body = r.json()
-    assert "HARBOUR LANE STATIONERS" in body["text"] and "69.80" in body["text"]
+    assert "DEMO STATIONERS" in body["text"] and "69.80" in body["text"]
     assert body["sandbox"]["landlock_abi"] >= 1 and body["sandbox"]["network"] == "none"
     assert list(tmp_path.iterdir()) == []  # the job folder is removed afterwards
 

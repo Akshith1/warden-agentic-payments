@@ -7,10 +7,10 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = Path(__file__).resolve().parent
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 
-CLEAN = """HARBOUR LANE STATIONERS SDN BHD
-12 Jalan Pelabuhan, 81700 Pasir Gudang
+CLEAN = """DEMO STATIONERS SDN BHD
+1 Jalan Contoh 3, 81700 Contoh Town
 
-TAX INVOICE      No: HLS-2026-0210
+TAX INVOICE      No: DST-2026-0210
 Date: 02/11/2026
 
 A4 paper ream x 4          RM  56.00
